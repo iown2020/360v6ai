@@ -10,6 +10,9 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 env:
   REPO_URL: https://github.com/laipeng668/openwrt-6.x.git
   REPO_BRANCH: 25.12-nss
@@ -23,9 +26,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 600
 
+    env:
+      GH_TOKEN: ${{ github.token }}
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # 不使用 actions/checkout（JS action 在本 runner 上无法启动），
+      # 改用 git clone 直接拉取本仓库
+      - name: Clone this repo
+        run: |
+          git clone --depth 1 --branch "${GITHUB_REF_NAME}" "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          echo "=== repo version ==="
+          git log -1 --oneline
+          ls configs/ scripts/
 
       - name: Clean up runner disk (+8GB)
         run: |
@@ -61,6 +74,7 @@ jobs:
           echo "=== Installing build dependencies ==="
           sudo -E apt-get -y update
           sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
+          command -v gh >/dev/null 2>&1 || sudo -E apt-get -y install gh
           sudo -E systemctl daemon-reload
           sudo timedatectl set-timezone "$TZ"
           echo ""
@@ -99,7 +113,7 @@ jobs:
           echo "=== Disk after diy script ==="
           df -h /
 
-      - name: Generate env & Cache toolchain
+      - name: Generate env
         run: |
           cd $OPENWRT_PATH
           cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
@@ -110,26 +124,6 @@ jobs:
           echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
           DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
           echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-
-      - name: Cache toolchain
-        uses: actions/cache@v4
-        with:
-          key: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}
-          restore-keys: |
-            ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
-          path: |
-            ${{ env.OPENWRT_PATH }}/.ccache
-            ${{ env.OPENWRT_PATH }}/staging_dir
-
-      - name: Refresh cache timestamps
-        run: |
-          if [ -d "$OPENWRT_PATH/staging_dir" ]; then
-            find "$OPENWRT_PATH/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r dir; do
-                find "$dir" -type f -exec touch {} +
-            done
-            echo "=== Disk after cache restore ==="
-            df -h /
-          fi
 
       - name: Write final config & Download deps
         run: |
@@ -176,12 +170,11 @@ jobs:
           echo ""
           echo "=== Disk after compile ==="
           df -h /
-          echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Collect firmware
-        if: steps.compile.outputs.status == 'success'
+        if: (!cancelled())
         run: |
-          cd $OPENWRT_PATH/bin/targets/*/*
+          cd $OPENWRT_PATH/bin/targets/*/* 2>/dev/null || { echo "no bin/targets output"; exit 0; }
           echo "=== firmware files ==="
           ls -lh *.bin *.ubi 2>/dev/null || echo "no .bin/.ubi found"
           echo ""
@@ -194,27 +187,46 @@ jobs:
           echo ""
           echo "=== Disk before cleanup ==="
           df -h /
-          # 清理 download 目录节省空间（固件已在 bin/ 里了）
           rm -rf $OPENWRT_PATH/dl/*
           echo ""
           echo "=== Disk after cleanup ==="
           df -h /
 
-      - name: Upload firmware
-        if: steps.compile.outputs.status == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: 360V6-NSS-firmware
-          path: |
-            ${{ env.FIRMWARE_PATH }}/*.bin
-            ${{ env.FIRMWARE_PATH }}/*.ubi
-            ${{ env.FIRMWARE_PATH }}/*.manifest
-          retention-days: 30
+      # 不使用 actions/upload-artifact（JS action 在本 runner 上无法启动），
+      # 改用 gh release 发布固件（纯 shell）
+      - name: Release firmware
+        if: (!cancelled())
+        run: |
+          if [ -z "$FIRMWARE_PATH" ]; then
+            echo "no firmware produced, skip release"
+            exit 0
+          fi
+          TAG="360V6-$(date +%Y%m%d-%H%M)"
+          cd "$FIRMWARE_PATH"
+          FILES=$(ls *.bin *.ubi *.manifest 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            echo "no .bin/.ubi/.manifest files, skip release"
+            exit 0
+          fi
+          echo "=== releasing: $TAG ==="
+          gh release create "$TAG" \
+            --title "360V6 NSS 固件 $TAG" \
+            --notes "自动编译产物
+          - 源码: $REPO_URL ($REPO_BRANCH)
+          - OpenClash + EasyTier 2.4.5 + NSS 硬件加速
+          - 默认 IP: 192.168.50.1 / Wi-Fi SSID: 2024 / 密码: 20242024" \
+            || { echo "create release failed"; exit 1; }
+          gh release upload "$TAG" $FILES --clobber
 
       - name: Upload failed log
         if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-failed-log
-          path: ${{ env.OPENWRT_PATH }}/logs/
-          retention-days: 7
+        run: |
+          if [ -d "$OPENWRT_PATH/logs" ]; then
+            TAG="fail-$(date +%Y%m%d-%H%M)"
+            tar -czf /tmp/build-failed-log.tar.gz -C "$OPENWRT_PATH" logs 2>/dev/null || true
+            gh release create "$TAG" /tmp/build-failed-log.tar.gz \
+              --title "编译失败日志 $TAG" \
+              --notes "构建失败时的完整日志，解压查看 logs/ 目录"
+          else
+            echo "no logs dir found"
+          fi
