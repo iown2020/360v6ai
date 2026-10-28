@@ -1,0 +1,167 @@
+name: 360V6 OpenWRT NSS Firmware Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REPO_URL: https://github.com/laipeng668/openwrt-6.x.git
+  REPO_BRANCH: 25.12-nss
+  CONFIG_FILE: configs/IPQ60XX.config
+  GENERAL_CONFIG_FILE: configs/General.config
+  DIY_SCRIPT: scripts/Roc-script.sh
+  TZ: Asia/Shanghai
+
+jobs:
+  Build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 600
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup build env
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
+          sudo -E systemctl daemon-reload
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Clone NSS source
+        run: |
+          set -eux
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b $REPO_BRANCH --single-branch $REPO_URL openwrt 2>&1 || {
+            echo "=== git clone failed, retrying with https ==="
+            rm -rf openwrt
+            git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+          }
+          cd openwrt
+          echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+          echo "=== source version ==="
+          git log -1 --oneline
+          echo ""
+          echo "=== kernel version ==="
+          ls target/linux/generic/kernel-* || echo "no kernel version file"
+          echo ""
+          echo "=== check 360V6 device support ==="
+          find target/linux/qualcommax -name "*qihoo*" -o -name "*360v6*" 2>/dev/null | head -20
+
+      - name: Run custom script (feeds + Easytier + OpenClash + dashboard)
+        run: |
+          chmod +x $DIY_SCRIPT
+          cd $OPENWRT_PATH
+          $GITHUB_WORKSPACE/$DIY_SCRIPT
+
+      - name: Generate env & Cache toolchain
+        run: |
+          cd $OPENWRT_PATH
+          cp $CONFIG_FILE .config
+          make defconfig > /dev/null 2>&1
+          SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+          echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+          DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
+          echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+          DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
+          echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          key: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}
+          restore-keys: |
+            ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+          path: |
+            ${{ env.OPENWRT_PATH }}/.ccache
+            ${{ env.OPENWRT_PATH }}/staging_dir
+
+      - name: Refresh cache timestamps
+        run: |
+          if [ -d "$OPENWRT_PATH/staging_dir" ]; then
+            find "$OPENWRT_PATH/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r dir; do
+                find "$dir" -type f -exec touch {} +
+            done
+          fi
+
+      - name: Write final config & Download deps
+        run: |
+          cd $OPENWRT_PATH
+          cat $CONFIG_FILE $GENERAL_CONFIG_FILE > .config
+          if ! make defconfig 2>&1 | tee /tmp/defconfig.log; then
+            echo "=== defconfig failed, check unknown symbols ==="
+            grep -i "unknown\|error\|warning.*symbol" /tmp/defconfig.log || true
+            exit 1
+          fi
+
+          echo "=== target device ==="
+          grep "CONFIG_TARGET_DEVICE" .config
+          echo ""
+          echo "=== ath11k mem profile ==="
+          grep "ATH11K_MEM_PROFILE" .config
+          echo ""
+          echo "=== selected packages count ==="
+          grep -c "^CONFIG_PACKAGE_.*=y" .config
+          echo ""
+          echo "=== check OpenClash ==="
+          grep "openclash" .config || echo "[WARN] OpenClash not found in config"
+          echo ""
+          echo "=== check EasyTier ==="
+          grep "easytier" .config || echo "[WARN] EasyTier not found in config"
+
+          make download -j$(nproc)
+
+      - name: Compile
+        id: compile
+        run: |
+          cd $OPENWRT_PATH
+          echo "=== start compile ==="
+          echo "CPU cores: $(nproc)"
+          timeout 5400 make -j$(nproc) tools/compile || { echo "tools parallel failed, retry serial"; timeout 5400 make -j1 V=s tools/compile || true; }
+          timeout 9000 make -j$(nproc) || { echo "build failed, retry serial"; timeout 9000 make -j1 V=s; }
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Check disk space
+        if: (!cancelled())
+        run: df -hT
+
+      - name: Collect firmware
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd $OPENWRT_PATH/bin/targets/*/*
+          echo "=== firmware files ==="
+          ls -lh *.bin *.ubi 2>/dev/null || echo "no .bin/.ubi found"
+          echo ""
+          echo "=== 360V6 files ==="
+          find . -name "*qihoo*360v6*" -o -name "*360v6*" 2>/dev/null
+          echo ""
+          echo "=== firmware size ==="
+          du -sh .
+          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: Upload firmware
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 360V6-NSS-firmware
+          path: |
+            ${{ env.FIRMWARE_PATH }}/*.bin
+            ${{ env.FIRMWARE_PATH }}/*.ubi
+            ${{ env.FIRMWARE_PATH }}/*.manifest
+          retention-days: 30
+
+      - name: Upload failed log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failed-log
+          path: ${{ env.OPENWRT_PATH }}/logs/
+          retention-days: 7
