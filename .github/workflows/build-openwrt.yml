@@ -30,6 +30,17 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
+      # 自托管 runner 不自动清理工作目录，先清掉上次构建残留（openwrt 树可达 20GB）
+      - name: Clean workspace from previous runs
+        run: |
+          echo "=== workspace usage before ==="
+          du -sh "$GITHUB_WORKSPACE" 2>/dev/null || true
+          df -h /
+          rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.[!.]* 2>/dev/null || true
+          echo "=== workspace usage after ==="
+          du -sh "$GITHUB_WORKSPACE" 2>/dev/null || true
+          df -h /
+
       # 不使用 actions/checkout（JS action 在本 runner 上无法启动），
       # 改用 git clone 直接拉取本仓库
       - name: Clone this repo
@@ -49,29 +60,37 @@ jobs:
           git log -1 --oneline
           ls configs/ scripts/
 
-      - name: Clean up runner disk (+8GB)
+      - name: Clean up runner disk (+30GB)
         run: |
           echo "=== Before cleanup ==="
           df -h /
           echo ""
-          echo "=== Removing unneeded runner packages ==="
+          echo "=== Removing pre-installed toolchains (biggest win) ==="
+          sudo rm -rf /opt/* /opt/hostedtoolcache 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
+          sudo rm -rf /usr/share/swift 2>/dev/null || true
+          sudo rm -rf /usr/local/.ghcup 2>/dev/null || true
+          sudo rm -rf /usr/local/share/powershell 2>/dev/null || true
+          sudo rm -rf /usr/local/share/chromium 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
+          sudo rm -rf /home/runner/.cache/* 2>/dev/null || true
+          echo ""
+          echo "=== Removing docker images ==="
+          sudo docker system prune -af --volumes 2>/dev/null || true
+          echo ""
+          echo "=== Freeing swap file ==="
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+          echo ""
+          echo "=== Purging unneeded apt packages ==="
           sudo -E apt-get -y remove --purge \
             azure-cli \
             azure-functions-core-tools-4 \
-            ghc \
-            dotnet-sdk-8.0 \
-            dotnet-sdk-9.0 \
-            libgl1-mesa-glx \
-            libglib2.0-dev \
             2>/dev/null || true
           sudo -E apt-get -y autoremove --purge 2>/dev/null || true
           sudo -E apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          echo ""
-          echo "=== Removing runner pre-installed caches ==="
-          sudo rm -rf /home/runner/.cache/* 2>/dev/null || true
-          sudo rm -rf /usr/local/lib/node_modules/* 2>/dev/null || true
-          sudo rm -rf /opt/* 2>/dev/null || true
           echo ""
           echo "=== After cleanup ==="
           df -h /
