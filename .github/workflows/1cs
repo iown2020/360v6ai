@@ -1,0 +1,7 @@
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - run: |
+          ls -la /home/runner/actions-runner/cached/*/externals/ || true
+          /home/runner/actions-runner/cached/*/externals/node24/bin/node --version || echo "node24 缺失"
