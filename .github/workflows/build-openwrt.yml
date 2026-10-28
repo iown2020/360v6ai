@@ -65,7 +65,7 @@ jobs:
       - name: Generate env & Cache toolchain
         run: |
           cd $OPENWRT_PATH
-          cp $CONFIG_FILE .config
+          cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
           make defconfig > /dev/null 2>&1
           SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
           echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
@@ -95,7 +95,7 @@ jobs:
       - name: Write final config & Download deps
         run: |
           cd $OPENWRT_PATH
-          cat $CONFIG_FILE $GENERAL_CONFIG_FILE > .config
+          cat $GITHUB_WORKSPACE/$CONFIG_FILE $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE > .config
           if ! make defconfig 2>&1 | tee /tmp/defconfig.log; then
             echo "=== defconfig failed, check unknown symbols ==="
             grep -i "unknown\|error\|warning.*symbol" /tmp/defconfig.log || true
