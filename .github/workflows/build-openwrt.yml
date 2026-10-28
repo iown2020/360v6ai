@@ -10,6 +10,7 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+# 抑制 Node.js 20 deprecation 警告（actions/cache@v4 尚未发布 v5）
 env:
   REPO_URL: https://github.com/laipeng668/openwrt-6.x.git
   REPO_BRANCH: 25.12-nss
@@ -17,6 +18,7 @@ env:
   GENERAL_CONFIG_FILE: configs/General.config
   DIY_SCRIPT: scripts/Roc-script.sh
   TZ: Asia/Shanghai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   Build:
@@ -25,16 +27,47 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Clean up runner disk (+8GB)
+        run: |
+          echo "=== Before cleanup ==="
+          df -h /
+          echo ""
+          echo "=== Removing unneeded runner packages ==="
+          sudo -E apt-get -y remove --purge \
+            azure-cli \
+            azure-functions-core-tools-4 \
+            ghc \
+            dotnet-sdk-8.0 \
+            dotnet-sdk-9.0 \
+            libgl1-mesa-glx \
+            libglib2.0-dev \
+            2>/dev/null || true
+          sudo -E apt-get -y autoremove --purge 2>/dev/null || true
+          sudo -E apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo ""
+          echo "=== Removing runner pre-installed caches ==="
+          sudo rm -rf /home/runner/.cache/* 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/node_modules/* 2>/dev/null || true
+          sudo rm -rf /opt/* 2>/dev/null || true
+          echo ""
+          echo "=== After cleanup ==="
+          df -h /
 
       - name: Setup build env
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          echo "=== Installing build dependencies ==="
           sudo -E apt-get -y update
           sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
           sudo -E systemctl daemon-reload
           sudo timedatectl set-timezone "$TZ"
+          echo ""
+          echo "=== Disk after setup ==="
+          df -h /
 
       - name: Clone NSS source
         run: |
@@ -55,12 +88,18 @@ jobs:
           echo ""
           echo "=== check 360V6 device support ==="
           find target/linux/qualcommax -name "*qihoo*" -o -name "*360v6*" 2>/dev/null | head -20
+          echo ""
+          echo "=== Disk after clone ==="
+          df -h /
 
       - name: Run custom script (feeds + Easytier + OpenClash + dashboard)
         run: |
           chmod +x $DIY_SCRIPT
           cd $OPENWRT_PATH
           $GITHUB_WORKSPACE/$DIY_SCRIPT
+          echo ""
+          echo "=== Disk after diy script ==="
+          df -h /
 
       - name: Generate env & Cache toolchain
         run: |
@@ -90,6 +129,8 @@ jobs:
             find "$OPENWRT_PATH/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r dir; do
                 find "$dir" -type f -exec touch {} +
             done
+            echo "=== Disk after cache restore ==="
+            df -h /
           fi
 
       - name: Write final config & Download deps
@@ -116,8 +157,15 @@ jobs:
           echo ""
           echo "=== check EasyTier ==="
           grep "easytier" .config || echo "[WARN] EasyTier not found in config"
+          echo ""
+          echo "=== Disk before make download ==="
+          df -h /
 
           make download -j$(nproc)
+
+          echo ""
+          echo "=== Disk after make download ==="
+          df -h /
 
       - name: Compile
         id: compile
@@ -127,11 +175,10 @@ jobs:
           echo "CPU cores: $(nproc)"
           timeout 5400 make -j$(nproc) tools/compile || { echo "tools parallel failed, retry serial"; timeout 5400 make -j1 V=s tools/compile || true; }
           timeout 9000 make -j$(nproc) || { echo "build failed, retry serial"; timeout 9000 make -j1 V=s; }
+          echo ""
+          echo "=== Disk after compile ==="
+          df -h /
           echo "status=success" >> $GITHUB_OUTPUT
-
-      - name: Check disk space
-        if: (!cancelled())
-        run: df -hT
 
       - name: Collect firmware
         if: steps.compile.outputs.status == 'success'
@@ -146,10 +193,18 @@ jobs:
           echo "=== firmware size ==="
           du -sh .
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+          echo ""
+          echo "=== Disk before cleanup ==="
+          df -h /
+          # 清理 download 目录节省空间（固件已在 bin/ 里了）
+          rm -rf $OPENWRT_PATH/dl/*
+          echo ""
+          echo "=== Disk after cleanup ==="
+          df -h /
 
       - name: Upload firmware
         if: steps.compile.outputs.status == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: 360V6-NSS-firmware
           path: |
@@ -160,7 +215,7 @@ jobs:
 
       - name: Upload failed log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-failed-log
           path: ${{ env.OPENWRT_PATH }}/logs/
