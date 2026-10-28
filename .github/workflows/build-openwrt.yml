@@ -34,7 +34,16 @@ jobs:
       # 改用 git clone 直接拉取本仓库
       - name: Clone this repo
         run: |
-          git clone --depth 1 --branch "${GITHUB_REF_NAME}" "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_WORKSPACE"
+          echo "=== cloning ${GITHUB_REPOSITORY} (${GITHUB_REF_NAME}) ==="
+          if ! git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
+               "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+               "$GITHUB_WORKSPACE" 2>/tmp/clone_err.log; then
+            echo "=== token clone failed, dump error ==="
+            cat /tmp/clone_err.log || true
+            echo "=== retrying anonymous clone (public repo) ==="
+            git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
+               "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_WORKSPACE"
+          fi
           cd "$GITHUB_WORKSPACE"
           echo "=== repo version ==="
           git log -1 --oneline
