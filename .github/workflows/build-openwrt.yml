@@ -10,7 +10,6 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
-# 抑制 Node.js 20 deprecation 警告（actions/cache@v4 尚未发布 v5）
 env:
   REPO_URL: https://github.com/laipeng668/openwrt-6.x.git
   REPO_BRANCH: 25.12-nss
@@ -18,7 +17,6 @@ env:
   GENERAL_CONFIG_FILE: configs/General.config
   DIY_SCRIPT: scripts/Roc-script.sh
   TZ: Asia/Shanghai
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   Build:
@@ -27,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Clean up runner disk (+8GB)
         run: |
@@ -204,7 +202,7 @@ jobs:
 
       - name: Upload firmware
         if: steps.compile.outputs.status == 'success'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: 360V6-NSS-firmware
           path: |
@@ -215,7 +213,7 @@ jobs:
 
       - name: Upload failed log
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: build-failed-log
           path: ${{ env.OPENWRT_PATH }}/logs/
