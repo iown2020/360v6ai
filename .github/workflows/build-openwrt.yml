@@ -112,7 +112,20 @@ jobs:
       - name: Clone NSS source
         run: |
           set -eux
-          cd $GITHUB_WORKSPACE
+          # GitHub 托管 runner 的 /mnt 是一块 ~75GB 的空闲临时 SSD，
+          # 比系统盘（/ 仅剩 ~25GB）大得多。哪边可用空间大就把编译放哪边。
+          ROOT_A=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          MNT_A=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc '0-9')
+          MNT_A=${MNT_A:-0}
+          if [ "$MNT_A" -gt "$((ROOT_A + 10))" ]; then
+            BUILD_ROOT=/mnt/build
+            sudo mkdir -p /mnt/build && sudo chown -R $USER:$USER /mnt/build
+            echo "=== using /mnt build root (${MNT_A}G free) ==="
+          else
+            BUILD_ROOT=$GITHUB_WORKSPACE
+            echo "=== using workspace build root (${ROOT_A}G free) ==="
+          fi
+          cd "$BUILD_ROOT"
           git clone --depth 1 -b $REPO_BRANCH --single-branch $REPO_URL openwrt 2>&1 || {
             echo "=== git clone failed, retrying with https ==="
             rm -rf openwrt
