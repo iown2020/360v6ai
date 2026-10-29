@@ -116,20 +116,24 @@ echo "=== 更新 feeds ==="
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-# --- 8.5 zram-swap 限制 256MB 默认值 ---
-# OpenWrt 默认 zram-swap 等于物理内存（512MB），在 512MB 机器上白白吃掉一半
-# 必须 patch init 脚本默认值（运行时 uci-defaults 里 zram0 还没创建）
-# OpenWrt zram-swap init 用 getconf _PHYS_PAGES 算，我们用 sed 把因子从 1.0 改成 0.5
-ZRAM_INIT=$(find package feeds -path "*zram-swap*" -name "zram" -type f 2>/dev/null | head -1)
-if [ -n "$ZRAM_INIT" ]; then
-    echo "找到 zram-swap init: $ZRAM_INIT"
-    # OpenWrt 标准 zram-swap init 用 ZRAM_FACTOR（默认 1.0 = 物理内存）
-    sed -i 's/ZRAM_FACTOR=.*/ZRAM_FACTOR="0.5"/' "$ZRAM_INIT" 2>/dev/null || true
-    # 兜底: 如果上面没匹配上，直接算 pages / 2
-    sed -i 's/zram_size=$((zram_size \/ 1))/zram_size=$((zram_size \/ 2))/' "$ZRAM_INIT" 2>/dev/null || true
-    echo "zram-swap 默认值已 patch: ZRAM_FACTOR=0.5 (256MB)"
+# --- 8.5 zram-swap 上限锁 256MB ---
+# 上游 init 脚本路径为 package/system/zram-swap/files/zram.init（注意文件名是 zram.init）
+# 其默认值为 ram_size(kB) / 2048 = 物理内存的一半（512M 机型约 240MB）
+# 这里显式钉成 256MB，避免不同内核 MemTotal 差异导致数值漂移
+ZRAM_INIT="package/system/zram-swap/files/zram.init"
+if [ ! -f "$ZRAM_INIT" ]; then
+    ZRAM_INIT=$(find package feeds -type f \( -name "zram.init" -o -name "zram" \) 2>/dev/null | head -1)
+fi
+if [ -n "$ZRAM_INIT" ] && [ -f "$ZRAM_INIT" ]; then
+    # 默认值表达式: echo $(( ram_size / 2048 ))  ->  echo 256
+    sed -i 's|\$(( ram_size / 2048 ))|256|' "$ZRAM_INIT"
+    if grep -q 'echo 256' "$ZRAM_INIT"; then
+        echo "[zram] 默认大小已锁定 256MB ($ZRAM_INIT)"
+    else
+        echo "[zram] 警告：patch 未命中，$ZRAM_INIT 内容可能已变更（将按默认 = 内存一半约 240MB）"
+    fi
 else
-    echo "未找到 zram-swap init 脚本（可能在 kernel 包内置或位置不同）"
+    echo "[zram] 警告：未找到 zram-swap init，将按默认值（内存一半约 240MB）"
 fi
 
 # --- 9. 设置默认登录页为仪表盘 ---
