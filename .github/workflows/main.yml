@@ -1,0 +1,52 @@
+# 一次性诊断 workflow：验证 runner 镜像里 node24 是否存在
+# 验证完即可删除本文件，不影响主构建
+name: Diagnose Runner node24
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check runner externals
+        run: |
+          echo "=== runner info ==="
+          uname -a
+          echo "RUNNER_HOME candidates:"
+          ls -d /home/runner/actions-runner/cached/* 2>/dev/null || echo "no cached dir"
+          ls -d /opt/hostedtoolcache/ 2>/dev/null | head -5 || true
+          echo ""
+          echo "=== externals dir ==="
+          for R in /home/runner/actions-runner/cached/*/externals; do
+            [ -d "$R" ] || continue
+            echo "--- $R ---"
+            ls "$R"
+          done
+          echo ""
+          echo "=== node24 binary ==="
+          for N in /home/runner/actions-runner/cached/*/externals/node24/bin/node; do
+            if [ -x "$N" ]; then
+              echo "FOUND: $N"
+              "$N" --version
+            else
+              echo "MISSING: $N"
+            fi
+          done
+          echo ""
+          echo "=== node20 binary (对照) ==="
+          for N in /home/runner/actions-runner/cached/*/externals/node20/bin/node; do
+            if [ -x "$N" ]; then
+              echo "FOUND: $N"
+              "$N" --version
+            else
+              echo "MISSING: $N"
+            fi
+          done
+          echo ""
+          echo "=== disk ==="
+          df -h / /mnt 2>/dev/null || df -h /
