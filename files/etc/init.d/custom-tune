@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+# ============================================================
+# 360V6 每次开机执行的运行时调优
+# CPU 调频交给 cpufreq 服务（/etc/config/cpufreq：performance / 864MHz-1.2GHz），
+# 这里只处理 irqbalance 与 sysctl —— 二者是运行时状态，重启即丢失
+# （uci-defaults 只运行一次，放那里重启后就失效）
+# ============================================================
+START=19
+
+start() {
+    # --- 网络中断负载均衡 ---
+    CORES=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+    if [ "$CORES" -gt 1 ] && [ -x /usr/sbin/irqbalance ]; then
+        /etc/init.d/irqbalance restart 2>/dev/null || /usr/sbin/irqbalance 2>/dev/null || true
+        logger -t custom-tune "irqbalance 已启动（${CORES} 核）"
+    fi
+
+    # --- 内核调优 ---
+    # OpenWrt procd 不自动加载 /etc/sysctl.d，需手动 sysctl -p
+    if [ -d /etc/sysctl.d ]; then
+        sysctl -p /etc/sysctl.d/*.conf >/dev/null 2>&1 || true
+        logger -t custom-tune "内核调优已加载（swappiness=1 / backlog=4096 / TFO）"
+    fi
+}
