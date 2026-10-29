@@ -121,7 +121,7 @@ jobs:
           FAIL=0
           grep -q 'CONFIG_TARGET_BOARD="qualcommax"' .config \
             || { echo "[FAIL] 目标平台不是 qualcommax"; FAIL=1; }
-          grep -qE 'CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_.*360v6=y' .config \
+          grep -qE 'CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_.*360v6=y' .config \
             || { echo "[FAIL] 目标设备未选中 360v6"; FAIL=1; }
           grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config \
             || { echo "[FAIL] OpenClash 未启用"; FAIL=1; }
