@@ -4,31 +4,16 @@
 # 目的: 根治原装老化电源过流锁死、ath11k WPA3-SAE/PMF 死锁
 # ============================================================
 
-# --- 1. CPU 锁频 1.2GHz（performance governor 零切换延迟，防高负载掉延迟）---
-# performance 直接锁 max_freq，不像 schedutil 有 10-50ms ramp-up 延迟
-# 频率上限 1.2GHz 是防原装电源过流锁死的硬限制
-for cpu in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
-    # 优先 performance（零延迟），回退 schedutil，再回退 available 第一个
-    if echo performance > "${cpu}/scaling_governor" 2>/dev/null; then
-        :
-    elif echo schedutil > "${cpu}/scaling_governor" 2>/dev/null; then
-        :
-    else
-        avail=$(cat "${cpu}/scaling_available_governors" 2>/dev/null | awk '{print $1}')
-        [ -n "$avail" ] && echo "$avail" > "${cpu}/scaling_governor"
-    fi
-    echo 864000  > "${cpu}/scaling_min_freq" 2>/dev/null
-    echo 1200000 > "${cpu}/scaling_max_freq" 2>/dev/null
-done
-echo "[加固] CPU 锁频 1.2GHz（performance governor）"
-
-# --- 1.5 启动 irqbalance（网络中断分摊到多核，防高负载单核打爆）---
-# 只在多核机器上生效；irqbalance 默认自动 daemonize，命令立刻返回不阻塞
-CORES=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
-if [ "$CORES" -gt 1 ] && [ -x /usr/sbin/irqbalance ]; then
-    irqbalance 2>/dev/null || true
-    echo "[加固] irqbalance 已启动（${CORES} 核中断负载均衡）"
-fi
+# --- 1. CPU 调频（cpufreq 服务：performance + 上限 1.2GHz）---
+# cpufreq 是持久化的 uci 配置 + 开机服务（START=15），锁频不再靠一次性写 sysfs。
+# 包自带的 10-cpufreq 会按平台把 qualcommax 写成 schedutil，故置 global.set=1 跳过其默认值。
+uci -q set cpufreq.cpufreq.governor0='performance'
+uci -q set cpufreq.cpufreq.minfreq0='864000'
+uci -q set cpufreq.cpufreq.maxfreq0='1200000'
+uci -q set cpufreq.global.set='1'
+uci -q commit cpufreq
+/etc/init.d/cpufreq enable 2>/dev/null || true
+echo "[加固] cpufreq 已设为 performance / 864MHz-1.2GHz"
 
 # --- 2. Wi-Fi 默认配置 ---
 # SSID: 2024 / 密码: 20242024 / 纯 WPA2-PSK / 关 PMF & SAE
@@ -45,11 +30,17 @@ for iface in $(uci show wireless 2>/dev/null | grep '=wifi-iface' | cut -d. -f2 
 done
 
 # --- 3. 射频国家码与发射功率限制（防 FEM 功放过热失真）---
-# radio0 = 5GHz, radio1 = 2.4GHz
-uci set wireless.radio0.country='CN'
-uci set wireless.radio0.txpower='23'                 # 5G: 23dBm (200mW)
-uci set wireless.radio1.country='CN'
-uci set wireless.radio1.txpower='20'                 # 2.4G: 20dBm (100mW)
+# 按 band 判定，不依赖 radio0/radio1 的枚举顺序（不同 DTS 下 phy 顺序可能相反，
+# 原先写死 radio0=5G/radio1=2.4G 存在功率错配风险）
+for dev in $(uci show wireless 2>/dev/null | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
+    uci set wireless.${dev}.country='CN'
+    band="$(uci -q get wireless.${dev}.band)"
+    [ -n "$band" ] || band="$(uci -q get wireless.${dev}.hwmode)"
+    case "$band" in
+        2g|2.4g|11g|11b) uci set wireless.${dev}.txpower='20' ;;   # 2.4G: 20dBm (100mW)
+        *)               uci set wireless.${dev}.txpower='23' ;;   # 5G: 23dBm (200mW)
+    esac
+done
 uci commit wireless
 echo "[加固] Wi-Fi SSID=2024 / 纯 WPA2-PSK / 5G 23dBm / 2.4G 20dBm"
 
@@ -84,10 +75,32 @@ if [ "$(uci show dhcp 2>/dev/null | grep -c '@dnsmasq\[0\]')" -ge 1 ]; then
     uci commit dhcp
 fi
 
-# --- 8. 加载内核调优 sysctl（内存保护 + 网络栈优化）---
-if [ -d /etc/sysctl.d ]; then
-    sysctl -p /etc/sysctl.d/*.conf 2>/dev/null || true
-    echo "[加固] 内核调优已加载（swappiness=1 + backlog=4096 + TFO）"
+# --- 8. 内核调优 sysctl ---
+# 同样由 /etc/init.d/custom-tune 每次开机执行（见文件末尾启用）
+
+# --- 9. 默认 LuCI 主题 Aurora ---
+# 主题包自带的 30_luci-theme-aurora 在 sysupgrade 保留配置时（PKG_UPGRADE=1）不执行，
+# 这里无条件补一次，确保升级后界面仍是 Aurora
+if [ -d /www/luci-static/aurora ]; then
+    printf '%s\n' \
+        "set luci.themes.Aurora='/luci-static/aurora'" \
+        "set luci.main.mediaurlbase='/luci-static/aurora'" \
+        "commit luci" | uci -q batch
+    echo "[加固] 默认主题已设为 Aurora"
+fi
+
+# --- 10. zram 交换分区固定 256MB + LZ4 ---
+# uci-defaults 早于 /etc/init.d/zram（START=15）执行，此处设置可生效
+# 内核未编入 LZ4 时 zram.init 会自动回退 lzo，不会启动失败
+uci -q set system.@system[0].zram_size_mb='256'
+uci -q set system.@system[0].zram_comp_algo='lz4'
+uci -q commit system
+echo "[加固] zram 已设为 256MB / LZ4"
+
+# --- 11. 启用开机运行时调优服务 ---
+if [ -x /etc/init.d/custom-tune ]; then
+    /etc/init.d/custom-tune enable
+    echo "[加固] custom-tune 已启用（每次开机锁频 + irqbalance + sysctl）"
 fi
 
 echo "=== 360V6 出厂加固完成 ==="
