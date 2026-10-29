@@ -1,10 +1,7 @@
-name: 360V6 OpenWRT NSS Firmware Build
+name: 360V6 ai
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 concurrency:
   group: build-${{ github.ref }}
