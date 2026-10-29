@@ -176,6 +176,8 @@ sysctl vm.min_free_kbytes
 ## 参考链接
 
 - [laipeng668/openwrt-6.x NSS 源码](https://github.com/laipeng668/openwrt-6.x/tree/25.12-nss)
+- [ThinkPad88/360V6-NSS-AI](https://github.com/ThinkPad88/360V6-NSS-AI)
+- [zhiffu/360v6-openwr](https://github.com/zhiffu/360v6-openwrt)
 - [OpenClash 官方仓库](https://github.com/vernesong/OpenClash)
 - [EasyTier 官方仓库](https://github.com/EasyTier/EasyTier)
 - [Aurora 主题](https://github.com/eamonxg/luci-theme-aurora)
