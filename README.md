@@ -31,7 +31,7 @@
 
 | 类别 | 软件包 |
 |------|--------|
-| **管理界面** | LuCI 全套 + 系统仪表盘 + Aurora 主题（简体中文） |
+| **管理界面** | LuCI 全套 + Aurora 主题（简体中文） |
 | **NSS 加速** | 全套 qca-nss 驱动 + ECM 连接管理器 + NSS DP |
 | **科学上网** | **OpenClash**（含 TUN/TProxy 依赖） |
 | **内网组网** | **EasyTier 2.4.5**（由官方 v2.4.5 tag 构建） |
@@ -169,11 +169,6 @@ cat /sys/block/zram0/comp_algorithm   # 期望 [lz4]
 │   ├── IPQ60XX.config                    # 目标平台 + 512M 内存 Profile + NSS 固件版本
 │   └── General.config                    # 预装/禁用软件包列表
 ├── scripts/Roc-script.sh                 # 编译前：改 IP、Aurora、OpenClash、EasyTier feed、files 复制
-├── packages/luci-app-dashboard/          # 自定义仪表盘（root/ + htdocs/ 布局）
-│   ├── root/usr/share/luci/controller/dashboard.lua
-│   ├── root/usr/share/luci/view/dashboard/index.htm
-│   ├── root/www/cgi-bin/dashboard-data
-│   └── htdocs/luci-static/resources/view/status/include/95_dashboard.js
 ├── files/
 │   ├── etc/uci-defaults/99-custom-stability  # 首次开机：cpufreq/Wi-Fi/射频/防火墙/ECM/dnsmasq/主题/zram
 │   ├── etc/config/cpufreq                    # cpufreq 默认值：performance / 864-1200MHz

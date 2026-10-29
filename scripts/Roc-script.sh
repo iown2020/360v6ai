@@ -98,13 +98,6 @@ echo "=== 克隆最新 OpenClash ==="
 rm -rf feeds/luci/applications/luci-app-openclash
 git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
 
-# --- 6.5 集成自定义 LuCI 仪表盘 ---
-echo "=== 集成自定义 LuCI 仪表盘 ==="
-rm -rf package/luci-app-dashboard
-cp -r $GITHUB_WORKSPACE/packages/luci-app-dashboard package/luci-app-dashboard
-chmod +x package/luci-app-dashboard/root/www/cgi-bin/dashboard-data
-echo "仪表盘包已复制到 package/luci-app-dashboard"
-
 # --- 7. 复制 files 目录（加固脚本 + sysctl 内存保护）---
 if [ -d "$GITHUB_WORKSPACE/files" ]; then
     echo "=== 复制加固 files 目录 ==="
@@ -127,20 +120,5 @@ rm -rf package/feeds/luci/luci-app-openclash 2>/dev/null || true
 # 新版 zram-swap（zram.init）默认就是物理内存的一半，无需 patch 源码；
 # 固件要求固定 256MB + LZ4，统一在 files/etc/uci-defaults/99-custom-stability 中设置
 echo "zram 容量由 uci-defaults 固定为 256MB（LZ4）"
-
-# --- 9. 设置默认登录页为仪表盘 ---
-echo "=== 设置默认首页为系统仪表盘 ==="
-LUCI_CONFIG="package/feeds/luci/luci-base/root/etc/config/luci"
-if [ -f "$LUCI_CONFIG" ]; then
-    if ! grep -q "option home" "$LUCI_CONFIG"; then
-        sed -i "/config internal 'main'/a\\\toption home '/admin/dashboard'" "$LUCI_CONFIG"
-        echo "已设置默认首页为 /admin/dashboard"
-    else
-        sed -i "s|option home.*|option home '/admin/dashboard'|" "$LUCI_CONFIG"
-        echo "已更新默认首页为 /admin/dashboard"
-    fi
-else
-    echo "警告: 未找到 LuCI 配置文件 $LUCI_CONFIG"
-fi
 
 echo "=== 自定义配置加载完成 ==="
