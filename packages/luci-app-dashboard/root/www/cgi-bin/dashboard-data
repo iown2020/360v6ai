@@ -1,0 +1,110 @@
+#!/bin/sh
+# LuCI Dashboard - 系统信息 JSON 输出
+echo "Content-Type: application/json"
+echo "Cache-Control: no-store, no-cache, must-revalidate"
+echo ""
+
+# ========== CPU ==========
+read cpu user nice system idle iowait irq softirq steal rest < /proc/stat
+cpu_total=$((user+nice+system+idle+iowait+irq+softirq+steal))
+cpu_usage=$((100 - (idle * 100 / cpu_total)))
+
+# 负载
+load1=$(awk '{print $1}' /proc/loadavg)
+load5=$(awk '{print $2}' /proc/loadavg)
+load15=$(awk '{print $3}' /proc/loadavg)
+
+# ========== 内存 ==========
+mem_total=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+mem_free=$(awk '/MemFree/{print $2}' /proc/meminfo)
+mem_buffers=$(awk '/Buffers/{print $2}' /proc/meminfo)
+mem_cached=$(awk '/^Cached/{print $2}' /proc/meminfo)
+mem_available=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+mem_used=$((mem_total - mem_available))
+mem_usage=$((mem_used * 100 / mem_total))
+
+# Swap
+swap_total=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
+swap_free=$(awk '/SwapFree/{print $2}' /proc/meminfo)
+swap_used=$((swap_total - swap_free))
+
+# ========== 温度 ==========
+temps=""
+first=1
+for zone in /sys/class/thermal/thermal_zone*; do
+    [ -f "$zone/temp" ] || continue
+    temp_raw=$(cat "$zone/temp" 2>/dev/null)
+    [ -z "$temp_raw" ] && continue
+    temp_c=$((temp_raw / 1000))
+    ztype=$(cat "$zone/type" 2>/dev/null || echo "thermal")
+    [ $first -eq 1 ] && first=0 || temps="$temps,"
+    temps="$temps{\"name\":\"$ztype\",\"temp\":$temp_c}"
+done
+
+# ========== 运行时间 ==========
+uptime_sec=$(awk '{print int($1)}' /proc/uptime)
+up_days=$((uptime_sec / 86400))
+up_hours=$(( (uptime_sec % 86400) / 3600 ))
+up_mins=$(( (uptime_sec % 3600) / 60 ))
+
+# ========== 网络接口 ==========
+netifs=""
+first=1
+for ifdir in /sys/class/net/*; do
+    ifname=$(basename "$ifdir")
+    # 跳过 lo 和虚拟接口
+    [ "$ifname" = "lo" ] && continue
+    [ -d "$ifdir" ] || continue
+    rx_bytes=$(cat "$ifdir/statistics/rx_bytes" 2>/dev/null || echo 0)
+    tx_bytes=$(cat "$ifdir/statistics/tx_bytes" 2>/dev/null || echo 0)
+    operstate=$(cat "$ifdir/operstate" 2>/dev/null || echo "unknown")
+    [ $first -eq 1 ] && first=0 || netifs="$netifs,"
+    netifs="$netifs{\"name\":\"$ifname\",\"rx\":$rx_bytes,\"tx\":$tx_bytes,\"state\":\"$operstate\"}"
+done
+
+# ========== 连接数 ==========
+conn_count=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+conn_max=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)
+
+# ========== NSS 状态（如果有） ==========
+nss_active=0
+if [ -d /sys/kernel/debug/qca-nss-drv ]; then
+    nss_active=1
+fi
+
+# ========== 输出 JSON ==========
+cat <<EOF
+{
+  "cpu": {
+    "usage": $cpu_usage,
+    "load1": $load1,
+    "load5": $load5,
+    "load15": $load15
+  },
+  "memory": {
+    "total": $mem_total,
+    "used": $mem_used,
+    "free": $mem_free,
+    "buffers": $mem_buffers,
+    "cached": $mem_cached,
+    "available": $mem_available,
+    "usage": $mem_usage,
+    "swap_total": $swap_total,
+    "swap_used": $swap_used
+  },
+  "temps": [$temps],
+  "uptime": {
+    "seconds": $uptime_sec,
+    "days": $up_days,
+    "hours": $up_hours,
+    "mins": $up_mins
+  },
+  "network": [$netifs],
+  "connections": {
+    "count": $conn_count,
+    "max": $conn_max
+  },
+  "nss": $nss_active
+}
+EOF
+
