@@ -1,4 +1,4 @@
-name: 360V6 OpenWRT AI
+name: 360V6 OpenWRT NSS Firmware Build
 
 on:
   workflow_dispatch:
@@ -81,6 +81,16 @@ jobs:
             ${{ env.OPENWRT_PATH }}/.ccache
             ${{ env.OPENWRT_PATH }}/staging_dir
 
+      # 源码包缓存：dl 内容由 源码仓库 + feed 脚本 决定，与固件配置无关，
+      # 单独打 key 可跨提交复用，避免每次 make download 重下几百 MB
+      - name: Cache source tarballs
+        uses: actions/cache@v4
+        with:
+          key: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-dl-${{ hashFiles('scripts/Roc-script.sh') }}
+          restore-keys: |
+            ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-dl-
+          path: ${{ env.OPENWRT_PATH }}/dl
+
       # 缓存恢复后刷新 stamp 时间戳，避免 OpenWrt 误判工具链过期全量重建
       - name: Refresh cache timestamps
         run: |
@@ -129,6 +139,22 @@ jobs:
             || { echo "[FAIL] luci-app-easytier 未启用（EasyTier feed 注册失败？）"; FAIL=1; }
           grep -q '^CONFIG_PACKAGE_easytier=y' .config \
             || { echo "[FAIL] easytier 主程序未启用"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_luci-theme-aurora=y' .config \
+            || { echo "[FAIL] Aurora 主题未启用"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-dashboard=y' .config \
+            || { echo "[FAIL] 自定义仪表盘未启用"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_cpufreq=y' .config \
+            || { echo "[FAIL] cpufreq 调频服务未启用"; FAIL=1; }
+          # zram：swap 服务与 kmod 必须真正落地；LZ4 后端若被 defconfig 丢弃会自动回退 lzo，
+          # 因此只告警，不阻断编译
+          grep -q '^CONFIG_PACKAGE_zram-swap=y' .config \
+            || { echo "[FAIL] zram-swap 未启用（busybox swap 工具依赖未满足？）"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_kmod-zram=y' .config \
+            || { echo "[FAIL] kmod-zram 未启用"; FAIL=1; }
+          grep -q '^CONFIG_KERNEL_ZRAM_BACKEND_LZ4=y' .config \
+            || echo "[WARN] zram LZ4 后端未生效，运行时将回退 lzo"
+          grep -q '^CONFIG_ATH11K_MEM_PROFILE_512M=y' .config \
+            || echo "[WARN] ath11k 512M 内存 Profile 未生效"
           if grep -qE '^CONFIG_PACKAGE_luci-app-(passwall|passwall2)=y' .config; then
             echo "[FAIL] PassWall 仍在配置中"; FAIL=1
           fi
@@ -186,6 +212,39 @@ jobs:
           tag_name: R${{ github.run_number }}
           name: 360V6 NSS 固件 ${{ env.DATE_VERSION }} (build ${{ github.run_number }})
           generate_release_notes: true
+          body: |
+            **源码**：laipeng668/openwrt-6.x `25.12-nss`（Linux 6.12 + QCA NSS v11.4，NSS drv/ecm/dp 由设备默认包内置）
+            **目标**：qualcommax / ipq60xx / `qihoo_360v6`，512MB 内存（ath11k 512M Profile）
+            **版本**：R${{ env.DATE_VERSION }} / build ${{ github.run_number }}
+
+            ## 基本网络设置
+            | 项目 | 默认值 |
+            |---|---|
+            | 后台地址 | http://192.168.50.1 |
+            | 登录用户 | root（密码为空，首次登录请自行设置） |
+            | 无线 SSID | 2024（2.4G / 5G 同名） |
+            | 无线密码 | 20242024（纯 WPA2-PSK，已关闭 WPA3 / PMF） |
+            | 发射功率 | 5G 23dBm / 2.4G 20dBm，国家码 CN |
+            | CPU | 上限锁 1.2GHz（cpufreq 服务，performance 策略，系统 → CPU Freq 页可改） |
+            | 交换分区 | zram 256MB（LZ4） |
+
+            ## 预装插件
+            - **管理**：LuCI 简体中文 + Aurora 主题 + 自定义系统仪表盘（默认首页 /admin/dashboard）
+            - **加速**：NSS 全套驱动 + ECM（fw4 软件/硬件分流已关闭，由 NSS 独占）
+            - **代理**：OpenClash
+            - **组网**：EasyTier 2.4.5
+            - **共享**：Samba4 + USB 存储（ext4 / vfat / msdos，自动挂载）
+            - **运维**：网络唤醒 wol、定时重启 autoreboot、UPnP、autocore 硬件状态
+            - **工具**：bash、htop、nano、ttyd 终端、SFTP
+
+            ## 刷机方式
+            - **sysupgrade**：LuCI「系统 → 备份/升级」上传 `*sysupgrade.bin`；跨版本建议不保留配置
+            - **救砖**：U-Boot + TFTP 刷入 `*factory.ubi`（如产物包含该文件）
+
+            ## 校验
+            - 附件 `sha256sums` 用于校验镜像完整性
+            - 刷后 `lsmod | grep nss` 应看到 qca-nss-drv / qca-nss-ecm / qca-nss-dp
+            - 满速下载时 CPU 占用应低于 20%（NSS 硬件转发生效）
           files: |
             ${{ env.FIRMWARE_PATH }}/*360v6*
             ${{ env.FIRMWARE_PATH }}/sha256sums
