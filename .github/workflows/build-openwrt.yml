@@ -1,4 +1,4 @@
-name: 360V6 OpenWRT NSS Firmware Build
+name: 360V6 OpenWRT AI
 
 on:
   workflow_dispatch:
