@@ -1,14 +1,16 @@
-name: 360V6 ai
+name: 360V6 OpenWRT NSS Firmware Build
 
 on:
   workflow_dispatch:
 
+# Release 需要写权限：仓库 Settings → Actions → General → Workflow permissions
+# 必须选 "Read and write permissions"
+permissions:
+  contents: write
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: write
 
 env:
   REPO_URL: https://github.com/laipeng668/openwrt-6.x.git
@@ -23,108 +25,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 600
 
-    env:
-      GH_TOKEN: ${{ github.token }}
-
     steps:
-      # 自托管 runner 不自动清理工作目录，先清掉上次构建残留（openwrt 树可达 20GB）
-      - name: Clean workspace from previous runs
-        run: |
-          echo "=== workspace usage before ==="
-          du -sh "$GITHUB_WORKSPACE" 2>/dev/null || true
-          df -h /
-          rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.[!.]* 2>/dev/null || true
-          echo "=== workspace usage after ==="
-          du -sh "$GITHUB_WORKSPACE" 2>/dev/null || true
-          df -h /
-
-      # 不使用 actions/checkout（JS action 在本 runner 上无法启动），
-      # 改用 git clone 直接拉取本仓库
-      - name: Clone this repo
-        run: |
-          echo "=== cloning ${GITHUB_REPOSITORY} (${GITHUB_REF_NAME}) ==="
-          if ! git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
-               "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-               "$GITHUB_WORKSPACE" 2>/tmp/clone_err.log; then
-            echo "=== token clone failed, dump error ==="
-            cat /tmp/clone_err.log || true
-            echo "=== retrying anonymous clone (public repo) ==="
-            git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
-               "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_WORKSPACE"
-          fi
-          cd "$GITHUB_WORKSPACE"
-          echo "=== repo version ==="
-          git log -1 --oneline
-          ls configs/ scripts/
-
-      - name: Clean up runner disk (+30GB)
-        run: |
-          echo "=== Before cleanup ==="
-          df -h /
-          echo ""
-          echo "=== Removing pre-installed toolchains (biggest win) ==="
-          sudo rm -rf /opt/* /opt/hostedtoolcache 2>/dev/null || true
-          sudo rm -rf /usr/share/dotnet 2>/dev/null || true
-          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
-          sudo rm -rf /usr/share/swift 2>/dev/null || true
-          sudo rm -rf /usr/local/.ghcup 2>/dev/null || true
-          sudo rm -rf /usr/local/share/powershell 2>/dev/null || true
-          sudo rm -rf /usr/local/share/chromium 2>/dev/null || true
-          sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
-          sudo rm -rf /home/runner/.cache/* 2>/dev/null || true
-          echo ""
-          echo "=== Removing docker images ==="
-          sudo docker system prune -af --volumes 2>/dev/null || true
-          echo ""
-          echo "=== Freeing swap file ==="
-          sudo swapoff -a 2>/dev/null || true
-          sudo rm -f /swapfile 2>/dev/null || true
-          echo ""
-          echo "=== Purging unneeded apt packages ==="
-          sudo -E apt-get -y remove --purge \
-            azure-cli \
-            azure-functions-core-tools-4 \
-            2>/dev/null || true
-          sudo -E apt-get -y autoremove --purge 2>/dev/null || true
-          sudo -E apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          echo ""
-          echo "=== After cleanup ==="
-          df -h /
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup build env
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          echo "=== Installing build dependencies ==="
           sudo -E apt-get -y update
           sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
-          command -v gh >/dev/null 2>&1 || sudo -E apt-get -y install gh
           sudo -E systemctl daemon-reload
           sudo timedatectl set-timezone "$TZ"
-          echo ""
-          echo "=== Disk after setup ==="
-          df -h /
 
       - name: Clone NSS source
         run: |
           set -eux
-          # GitHub 托管 runner 的 /mnt 是一块 ~75GB 的空闲临时 SSD，
-          # 比系统盘（/ 仅剩 ~25GB）大得多。哪边可用空间大就把编译放哪边。
-          ROOT_A=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
-          MNT_A=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc '0-9')
-          MNT_A=${MNT_A:-0}
-          if [ "$MNT_A" -gt "$((ROOT_A + 10))" ]; then
-            BUILD_ROOT=/mnt/build
-            sudo mkdir -p /mnt/build && sudo chown -R $USER:$USER /mnt/build
-            echo "=== using /mnt build root (${MNT_A}G free) ==="
-          else
-            BUILD_ROOT=$GITHUB_WORKSPACE
-            echo "=== using workspace build root (${ROOT_A}G free) ==="
-          fi
-          cd "$BUILD_ROOT"
+          cd $GITHUB_WORKSPACE
           git clone --depth 1 -b $REPO_BRANCH --single-branch $REPO_URL openwrt 2>&1 || {
-            echo "=== git clone failed, retrying with https ==="
+            echo "=== git clone failed, retrying ==="
             rm -rf openwrt
             git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
           }
@@ -138,23 +57,11 @@ jobs:
           echo ""
           echo "=== check 360V6 device support ==="
           find target/linux/qualcommax -name "*qihoo*" -o -name "*360v6*" 2>/dev/null | head -20
-          echo ""
-          echo "=== Disk after clone ==="
-          df -h /
-
-      - name: Run custom script (feeds + Easytier + OpenClash + dashboard)
-        run: |
-          chmod +x $DIY_SCRIPT
-          cd $OPENWRT_PATH
-          $GITHUB_WORKSPACE/$DIY_SCRIPT
-          echo ""
-          echo "=== Disk after diy script ==="
-          df -h /
 
       - name: Generate env
         run: |
+          cp $GITHUB_WORKSPACE/$CONFIG_FILE $OPENWRT_PATH/.config
           cd $OPENWRT_PATH
-          cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
           make defconfig > /dev/null 2>&1
           SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
           echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
@@ -162,6 +69,33 @@ jobs:
           echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
           DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
           echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+      # 工具链缓存：二次编译可省 1-2 小时
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          key: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}
+          restore-keys: |
+            ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+          path: |
+            ${{ env.OPENWRT_PATH }}/.ccache
+            ${{ env.OPENWRT_PATH }}/staging_dir
+
+      # 缓存恢复后刷新 stamp 时间戳，避免 OpenWrt 误判工具链过期全量重建
+      - name: Refresh cache timestamps
+        run: |
+          if [ -d "$OPENWRT_PATH/staging_dir" ]; then
+            find "$OPENWRT_PATH/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r dir; do
+                find "$dir" -type f -exec touch {} +
+            done
+          fi
+
+      # feeds 处理与 EasyTier feed 注册统一在 Roc-script.sh 内完成
+      - name: Run custom script (feeds + EasyTier + files)
+        run: |
+          chmod +x $DIY_SCRIPT
+          cd $OPENWRT_PATH
+          $GITHUB_WORKSPACE/$DIY_SCRIPT
 
       - name: Write final config & Download deps
         run: |
@@ -172,7 +106,6 @@ jobs:
             grep -i "unknown\|error\|warning.*symbol" /tmp/defconfig.log || true
             exit 1
           fi
-
           echo "=== target device ==="
           grep "CONFIG_TARGET_DEVICE" .config
           echo ""
@@ -182,20 +115,36 @@ jobs:
           echo "=== selected packages count ==="
           grep -c "^CONFIG_PACKAGE_.*=y" .config
           echo ""
-          echo "=== check OpenClash ==="
-          grep "openclash" .config || echo "[WARN] OpenClash not found in config"
-          echo ""
-          echo "=== check EasyTier ==="
-          grep "easytier" .config || echo "[WARN] EasyTier not found in config"
-          echo ""
-          echo "=== Disk before make download ==="
-          df -h /
+
+          # 编译前预检：有错立刻失败，避免白编译数小时
+          echo "=== pre-flight checks ==="
+          FAIL=0
+          grep -q 'CONFIG_TARGET_BOARD="qualcommax"' .config \
+            || { echo "[FAIL] 目标平台不是 qualcommax"; FAIL=1; }
+          grep -qE 'CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_.*360v6=y' .config \
+            || { echo "[FAIL] 目标设备未选中 360v6"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config \
+            || { echo "[FAIL] OpenClash 未启用"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-easytier=y' .config \
+            || { echo "[FAIL] luci-app-easytier 未启用（EasyTier feed 注册失败？）"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_easytier=y' .config \
+            || { echo "[FAIL] easytier 主程序未启用"; FAIL=1; }
+          if grep -qE '^CONFIG_PACKAGE_luci-app-(passwall|passwall2)=y' .config; then
+            echo "[FAIL] PassWall 仍在配置中"; FAIL=1
+          fi
+          # NSS 符号为软校验：laipeng668 源码中由设备 DEFAULT_PACKAGES 隐式提供，
+          # 包名可能随上游调整，缺失只警告不阻断
+          for sym in kmod-qca-nss-drv kmod-qca-nss-ecm kmod-qca-nss-dp; do
+            grep -q "^CONFIG_PACKAGE_${sym}=y" .config \
+              || echo "[WARN] NSS 符号未出现: CONFIG_PACKAGE_${sym}"
+          done
+          [ $FAIL -eq 1 ] && { echo "=== 预检失败，终止（避免无效编译） ==="; exit 1; }
+          echo "=== 预检通过 ==="
 
           make download -j$(nproc)
-
-          echo ""
-          echo "=== Disk after make download ==="
-          df -h /
+          # 清理损坏的小下载（CDN 返回的 HTML 错误页等），防止编译期 Bad archive
+          find dl -size -1024c -exec ls -l {} \; 2>/dev/null || true
+          find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
 
       - name: Compile
         id: compile
@@ -203,16 +152,20 @@ jobs:
           cd $OPENWRT_PATH
           echo "=== start compile ==="
           echo "CPU cores: $(nproc)"
+          # 1) tools 阶段：并行失败转串行
           timeout 5400 make -j$(nproc) tools/compile || { echo "tools parallel failed, retry serial"; timeout 5400 make -j1 V=s tools/compile || true; }
+          # 2) 全量：并行失败转串行
           timeout 9000 make -j$(nproc) || { echo "build failed, retry serial"; timeout 9000 make -j1 V=s; }
-          echo ""
-          echo "=== Disk after compile ==="
-          df -h /
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Check disk space
+        if: (!cancelled())
+        run: df -hT
 
       - name: Collect firmware
-        if: (!cancelled())
+        if: steps.compile.outputs.status == 'success' && !cancelled()
         run: |
-          cd $OPENWRT_PATH/bin/targets/*/* 2>/dev/null || { echo "no bin/targets output"; exit 0; }
+          cd $OPENWRT_PATH/bin/targets/*/*
           echo "=== firmware files ==="
           ls -lh *.bin *.ubi 2>/dev/null || echo "no .bin/.ubi found"
           echo ""
@@ -222,49 +175,26 @@ jobs:
           echo "=== firmware size ==="
           du -sh .
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-          echo ""
-          echo "=== Disk before cleanup ==="
-          df -h /
-          rm -rf $OPENWRT_PATH/dl/*
-          echo ""
-          echo "=== Disk after cleanup ==="
-          df -h /
+          echo "DATE_VERSION=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
 
-      # 不使用 actions/upload-artifact（JS action 在本 runner 上无法启动），
-      # 改用 gh release 发布固件（纯 shell）
-      - name: Release firmware
-        if: (!cancelled())
-        run: |
-          if [ -z "$FIRMWARE_PATH" ]; then
-            echo "no firmware produced, skip release"
-            exit 0
-          fi
-          TAG="360V6-$(date +%Y%m%d-%H%M)"
-          cd "$FIRMWARE_PATH"
-          FILES=$(ls *.bin *.ubi *.manifest 2>/dev/null || true)
-          if [ -z "$FILES" ]; then
-            echo "no .bin/.ubi/.manifest files, skip release"
-            exit 0
-          fi
-          echo "=== releasing: $TAG ==="
-          gh release create "$TAG" \
-            --title "360V6 NSS 固件 $TAG" \
-            --notes "自动编译产物
-          - 源码: $REPO_URL ($REPO_BRANCH)
-          - OpenClash + EasyTier 2.4.5 + NSS 硬件加速
-          - 默认 IP: 192.168.50.1 / Wi-Fi SSID: 2024 / 密码: 20242024" \
-            || { echo "create release failed"; exit 1; }
-          gh release upload "$TAG" $FILES --clobber
+      # Release 发布固件（需要 contents: write，见顶部 permissions）
+      # tag 用 run_number 保证唯一；name 带日期版本便于识别
+      - name: Release
+        if: steps.compile.outputs.status == 'success' && !cancelled()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: R${{ github.run_number }}
+          name: 360V6 NSS 固件 ${{ env.DATE_VERSION }} (build ${{ github.run_number }})
+          generate_release_notes: true
+          files: |
+            ${{ env.FIRMWARE_PATH }}/*360v6*
+            ${{ env.FIRMWARE_PATH }}/sha256sums
+            ${{ env.FIRMWARE_PATH }}/config.buildinfo
 
       - name: Upload failed log
         if: failure()
-        run: |
-          if [ -d "$OPENWRT_PATH/logs" ]; then
-            TAG="fail-$(date +%Y%m%d-%H%M)"
-            tar -czf /tmp/build-failed-log.tar.gz -C "$OPENWRT_PATH" logs 2>/dev/null || true
-            gh release create "$TAG" /tmp/build-failed-log.tar.gz \
-              --title "编译失败日志 $TAG" \
-              --notes "构建失败时的完整日志，解压查看 logs/ 目录"
-          else
-            echo "no logs dir found"
-          fi
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failed-log
+          path: ${{ env.OPENWRT_PATH }}/logs/
+          retention-days: 7
