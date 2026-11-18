@@ -162,6 +162,17 @@ jobs:
             grep -q "^CONFIG_PACKAGE_${sym}=y" .config \
               || echo "[WARN] NSS 符号未出现: CONFIG_PACKAGE_${sym}"
           done
+          # BBR / sch_fq 是内核编译选项；若被 defconfig 丢弃，刷机后 sysctl 会失败
+          # 但 custom-tune 已做 logger 记录，此处仅警告不阻断
+          grep -q '^CONFIG_PACKAGE_kmod-tcp-bbr=y' .config \
+            || echo "[WARN] kmod-tcp-bbr 未生效，刷机后 BBR 将回退默认 cubic"
+          grep -q '^CONFIG_PACKAGE_kmod-sched-core=y' .config \
+            || echo "[WARN] kmod-sched-core 未生效，刷机后 fq 队列将回退默认 mq"
+          # SmartDNS 是 DNS 加速链路核心组件，缺失会导致 dnsmasq 转发目标不存在
+          grep -q '^CONFIG_PACKAGE_smartdns=y' .config \
+            || { echo "[FAIL] smartdns 主包未启用"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-smartdns=y' .config \
+            || { echo "[FAIL] luci-app-smartdns 未启用"; FAIL=1; }
           [ $FAIL -eq 1 ] && { echo "=== 预检失败，终止（避免无效编译） ==="; exit 1; }
           echo "=== 预检通过 ==="
 
