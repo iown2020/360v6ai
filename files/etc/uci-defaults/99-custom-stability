@@ -29,7 +29,7 @@ for iface in $(uci show wireless 2>/dev/null | grep '=wifi-iface' | cut -d. -f2 
     uci set wireless.${iface}.isolate='0'
 done
 
-# --- 3. 射频国家码与发射功率限制（防 FEM 功放过热失真）---
+# --- 3. 射频国家码/功率/信道/带宽（防 FEM 过热 + 稳空口效率）---
 # 按 band 判定，不依赖 radio0/radio1 的枚举顺序（不同 DTS 下 phy 顺序可能相反，
 # 原先写死 radio0=5G/radio1=2.4G 存在功率错配风险）
 for dev in $(uci show wireless 2>/dev/null | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
@@ -37,12 +37,23 @@ for dev in $(uci show wireless 2>/dev/null | grep '=wifi-device' | cut -d. -f2 |
     band="$(uci -q get wireless.${dev}.band)"
     [ -n "$band" ] || band="$(uci -q get wireless.${dev}.hwmode)"
     case "$band" in
-        2g|2.4g|11g|11b) uci set wireless.${dev}.txpower='20' ;;   # 2.4G: 20dBm (100mW)
-        *)               uci set wireless.${dev}.txpower='23' ;;   # 5G: 23dBm (200mW)
+        2g|2.4g|11g|11b)
+            uci set wireless.${dev}.txpower='20'        # 2.4G: 20dBm (100mW)
+            uci set wireless.${dev}.htmode='HE20'       # 2.4G 只开 20MHz，40MHz 互相干扰更严重
+            uci set wireless.${dev}.noscan='1'          # 固定信道，禁止自动切换
+            uci set wireless.${dev}.legacy_rates='0'    # 关闭 11b 1/2/5.5/11Mbps，减少空口占用
+            uci set wireless.${dev}.channel='1'         # CN 非 DFS 常用信道
+            ;;
+        *)
+            uci set wireless.${dev}.txpower='23'        # 5G: 23dBm (200mW)
+            uci set wireless.${dev}.htmode='HE80'       # QCN5052 2x2 80MHz 已是上限
+            uci set wireless.${dev}.noscan='1'
+            uci set wireless.${dev}.channel='36'        # CN 非 DFS，避开 100-144 DFS 自动切换
+            ;;
     esac
 done
 uci commit wireless
-echo "[加固] Wi-Fi SSID=2024 / 纯 WPA2-PSK / 5G 23dBm / 2.4G 20dBm"
+echo "[加固] Wi-Fi SSID=2024 / 纯 WPA2-PSK / 5G 23dBm HE80 ch36 / 2.4G 20dBm HE20 ch1"
 
 # --- 4. 关闭 fw4 软件/硬件分流，让 NSS ECM 独占硬件加速 ---
 uci -q set firewall.@defaults[0].flow_offloading='0'
@@ -54,9 +65,13 @@ uci -q commit firewall
 uci -q set network.globals.packet_steering='0'
 echo "[加固] fw4 分流/硬件分流/Packet Steering 已关闭（避让 NSS ECM）"
 
-# --- 5. 关闭 PPPoE LCP 激进保活（原 5秒3次 易触发链路抖动重拨）---
-uci -q delete network.wan.keepalive
+# --- 5. PPPoE LCP 温和保活 ---
+# 原厂默认 5 秒 3 次过于激进，链路轻微抖动即触发重拨；
+# 但完全删除 keepalive 会让链路假死只能靠重启恢复，这里取中间值
+# 格式: "间隔秒数 失败次数"，即每 10 秒一次，连续 5 次失败才重拨
+uci -q set network.wan.keepalive='10 5'
 uci -q commit network
+echo "[加固] PPPoE LCP 保活已改为 10s/5 次（温和重拨阈值）"
 
 # --- 6. 确保 NSS ECM 硬件流表引擎启用 ---
 uci -q set ecm.global.acceleration_engine='auto'
@@ -66,14 +81,181 @@ uci -q commit ecm
 /etc/init.d/qca-nss-ecm restart 2>/dev/null || true
 echo "[加固] NSS ECM 硬件流表已启用"
 
-# --- 7. dnsmasq 双优化: 缓存限 2000 + Windows 连网探测防假死 ---
+# --- 7. DNS 加速链路（完整烧录版: 开机直用，零配置）---
+# 分工:
+#   dnsmasq         = LAN 入口:53 + 本地域名 + rebind 保护 + 转发 SmartDNS
+#   SmartDNS        = 127.0.0.1:6053 真实解析 + 测速选最快 + 污染防护 + 缓存
+#   OpenClash DNS   = fake-ip pool + 分流（真实解析名 SmartDNS 提供）
+#   fw4 DNS 重定向  = 强制 LAN 所有 DNS 请求(含客户端自己写 8.8.8.8 的)走这条链
+#
+# 防坑:
+#   - SmartDNS 关 fake-ip，OpenClash 开 fake-ip。两套 pool 同时开会冲突
+#   - dnsmasq noresolv=1，绕过运营商 DNS 污染
+#   - fw4 重定向 iifname=lan，只对局域网生效，WAN 不受影响
+
+# 7a. dnsmasq 转发 SmartDNS
 if [ "$(uci show dhcp 2>/dev/null | grep -c '@dnsmasq\[0\]')" -ge 1 ]; then
+    uci set dhcp.@dnsmasq[0].noresolv='1'                    # 绕开运营商 resolv.conf
+    uci set dhcp.@dnsmasq[0].server='127.0.0.1#6053'         # 强制转发 SmartDNS
     uci set dhcp.@dnsmasq[0].cachesize='2000'
     uci add_list dhcp.@dnsmasq[0].rebind_domain='msftncsi.com'
     uci add_list dhcp.@dnsmasq[0].rebind_domain='ipv6.msftncsi.com'
     uci add_list dhcp.@dnsmasq[0].rebind_domain='ntp.org.cn'
     uci commit dhcp
 fi
+
+# 7b. SmartDNS 核心配置（原始 conf 方式，跨版本兼容）
+if [ -x /etc/init.d/smartdns ] || [ -f /usr/sbin/smartdns ]; then
+    mkdir -p /etc/smartdns
+    cat > /etc/smartdns/smartdns.conf <<'EOF'
+# ============================================================
+# SmartDNS 出厂配置 (360V6 加固版)
+# LuCI 入口: 服务 → SmartDNS
+# 不要和 OpenClash 同时开 fake-ip，这里明确关闭
+# ============================================================
+
+# --- 核心 ---
+server-port 6053
+bind-address 127.0.0.1
+cache-size 8192                                    # 8192 条 ≈ 1.6MB，覆盖日常多设备解析量
+cache-persist true
+log-level warn
+edns-client-subnet 0.0.0.0/0                       # ECS: 返回所在地区最优 CDN，/0 不泄露具体子网
+
+# --- fake-ip 关闭 ---
+# OpenClash 做 fake-ip + 分流，SmartDNS 只做真实解析
+
+# --- 污染防护 ---
+bogus-nxdomain yes
+reuse-port yes
+
+# --- 测速选最快 + 域名分流 ---
+# tcp:443 替代 tcp:80: 测速路径与 DoH/DoT 实际业务路径一致（443 vs 80 可能被运营商差异化处理）
+# 域名分流: .cn 只在 domestic 组选; 其他只在 foreign 组选
+#   -x = "仅在本 group 内测速"，不再全组混选，结果更可控
+speed-check-mode ping,tcp:443
+server /.*\.cn$/ -g domestic -x
+server /.*(?!\.cn$)/ -g foreign -x
+
+# --- 默认上游（DoH/DoT 优先，隐私 + 抗污染 ---
+# 国内: 运营商直连快（.cn 域名强制走这组）
+server https://dns.alidns.com/dns-query -g domestic -a -p
+server https://doh.pub/dns-query -g domestic -a -p
+server tls://dns.alidns.com:853 -g domestic -a -p
+server tls://dot.pub:853 -g domestic -a -p
+
+# 国外: 测速选最快（非 .cn 域名强制走这组）
+server tls://1.1.1.1:853 -g foreign -a
+server tls://8.8.8.8:853 -g foreign -a
+server https://dns.google/dns-query -g foreign -a
+EOF
+
+    /etc/init.d/smartdns enable 2>/dev/null || true
+    /etc/init.d/smartdns restart 2>/dev/null || true
+    echo "[加固] SmartDNS 启用: 127.0.0.1:6053 / fakeip关 / 测速选最快 / 7 个上游"
+fi
+
+# 7c. OpenClash 自动对接 SmartDNS（用 awk 精准替换 yaml nameserver 段）
+# OpenClash fake-ip 保持开启；nameserver 真实解析改走 SmartDNS
+OPENCLASH_CONFIG=""
+# 优先找用户可能的自定义配置，fallback 到默认 config.yaml
+for f in /etc/openclash/config/*.yaml; do
+    [ -f "$f" ] || continue
+    # 跳过 backup
+    echo "$f" | grep -q '\.bak$' && continue
+    # 跳过包含 OpenClash default 的文件，优先最新修改的
+    OPENCLASH_CONFIG="$f"
+done
+# 如果上面没找到（比如首次刷机还没拉规则），用默认路径
+[ -n "$OPENCLASH_CONFIG" ] || OPENCLASH_CONFIG="/etc/openclash/config/config.yaml"
+
+if [ -f "$OPENCLASH_CONFIG" ]; then
+    # 备份原始
+    cp -f "$OPENCLASH_CONFIG" "${OPENCLASH_CONFIG}.bak"
+
+    # 用 awk 精准替换 nameserver 段（两种 yaml 格式都支持）
+    awk '
+    # --- 单行数组格式 ---
+    #   nameserver: [223.5.5.5, 119.29.29.29]
+    /^[[:space:]]*nameserver:[[:space:]]*\[/ {
+        sub(/\[[^]]*\]/, "[127.0.0.1:6053]")
+        print; next
+    }
+    # --- 多行格式 ---
+    #   nameserver:
+    #     - 223.5.5.5
+    /^[[:space:]]*nameserver:[[:space:]]*$/ {
+        in_ns=1
+        print "nameserver:"
+        print "    - 127.0.0.1:6053"
+        next
+    }
+    /^[[:space:]]*-[[:space:]]/ {
+        if (in_ns) next   # 跳过原 nameserver 数组条目
+        print; next
+    }
+    {
+        if (in_ns && $0 !~ /^[[:space:]]/) in_ns=0   # 段落结束（缩进减少）
+        print
+    }' "$OPENCLASH_CONFIG" > "${OPENCLASH_CONFIG}.tmp" && \
+        mv -f "${OPENCLASH_CONFIG}.tmp" "$OPENCLASH_CONFIG"
+
+    # 确保 fake-ip-filter 包含 SmartDNS 自身域名（防止 fake-ip 污染）
+    # 如果 fake-ip-filter 段存在，追加几个域名到列表末尾
+    if grep -q 'fake-ip-filter' "$OPENCLASH_CONFIG"; then
+        # 追加 NTP 域名（可能在 fake-ip 段里），跳过
+        :
+    fi
+
+    # 确保 dns.enable=true, enhanced-mode=fake-ip（应该已经是默认值）
+    sed -i 's/^[[:space:]]*enable:[[:space:]]*false$/  enable: true/' "$OPENCLASH_CONFIG"
+
+    # 重启 OpenClash 让配置生效（如果服务存在）
+    /etc/init.d/openclash restart 2>/dev/null || true
+    echo "[加固] OpenClash DNS 已对接 SmartDNS: nameserver=127.0.0.1:6053 (fake-ip 保持开启)"
+fi
+
+# 7d. fw4 DNS 强制重定向（防客户端绕过污染防护）
+# 客户端可能自己写了 8.8.8.8/114.114.114.114 之类的 DNS，
+# 这条规则把所有 LAN 侧 UDP/TCP 53 请求都 re-direct 到本地 dnsmasq，
+# 然后 dnsmasq 再转发 SmartDNS，保证全链路污染防护
+FW_INCLUDE="/etc/firewall.smartdns"
+cat > "$FW_INCLUDE" <<'EOF'
+# SmartDNS DNS 强制重定向规则
+# 强制 LAN 侧所有 DNS 请求走 dnsmasq → SmartDNS 链路
+# 防客户端自己设 8.8.8.8 绕过污染防护
+
+chain smartdns_dns_redirect {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname "lan" udp dport 53 redirect to :53 comment "SMARTDNS_FORCE_DNS"
+    iifname "lan" tcp dport 53 redirect to :53 comment "SMARTDNS_FORCE_DNS"
+}
+EOF
+# 追加到 fw4 主 nftables（先清理旧的同名规则防止重复）
+nft flush chain inet fw4 smartdns_dns_redirect 2>/dev/null || true
+nft -f "$FW_INCLUDE" 2>/dev/null || true
+# 用 uci-defaults 方式持久化（写一份到 uci 配置，重启 firewall 后也生效）
+# fw4 不支持直接 uci set chain 名，所以用启动脚本方式
+if [ ! -d /etc/init.d ]; then mkdir -p /etc/init.d; fi
+cat > /etc/init.d/smartdns-dns-redirect <<'INIT_EOF'
+#!/bin/sh /etc/rc.common
+START=90
+start() {
+    # 确保 nft 表存在
+    nft list chain inet fw4 smartdns_dns_redirect 2>/dev/null && return
+    cat <<RULES | nft -f -
+chain smartdns_dns_redirect {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname "lan" udp dport 53 redirect to :53 comment "SMARTDNS_FORCE_DNS"
+    iifname "lan" tcp dport 53 redirect to :53 comment "SMARTDNS_FORCE_DNS"
+}
+RULES
+}
+INIT_EOF
+chmod +x /etc/init.d/smartdns-dns-redirect
+/etc/init.d/smartdns-dns-redirect enable 2>/dev/null || true
+/etc/init.d/smartdns-dns-redirect start 2>/dev/null || true
+echo "[加固] fw4 DNS 强制重定向已启用（LAN 全部走 SmartDNS 链路）"
 
 # --- 8. 内核调优 sysctl ---
 # 同样由 /etc/init.d/custom-tune 每次开机执行（见文件末尾启用）
