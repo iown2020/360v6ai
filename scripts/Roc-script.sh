@@ -77,6 +77,20 @@ rm -rf package/luci-app-shortcut-fe 2>/dev/null || true
 # wpad 切 mbedtls 版（体积更小，WPA2/WPA3 个人版均支持）
 sed -i "s/wpad-openssl/wpad-mbedtls/g" target/linux/qualcommax/Makefile 2>/dev/null || true
 
+# --- 3.6 排除 Rust 工具链（根治 ci-artifacts 404）---
+# packages feed 的 lang/rust 会被 feeds install -a 无差别 symlink 进来，
+# 然后 OpenWrt make world 会编它的 host 版；Rust bootstrap 默认 download-ci-llvm=true，
+# 从 ci-artifacts.rust-lang.org 下载 CI 预编译 LLVM，旧版本 artifact 被官方清理后 404 失败。
+# 我们的 EasyTier 用预编译二进制（Build/Compile 为空，Build/Prepare 是 wget zip），
+# 根本不需要 Rust 工具链，直接删掉 rust* 所有目录/symlink 即可。
+rm -rf feeds/packages/lang/rust 2>/dev/null || true
+rm -rf feeds/packages/lang/rustup 2>/dev/null || true
+rm -rf package/feeds/packages/rust* 2>/dev/null || true
+rm -rf package/feeds/packages/rustup* 2>/dev/null || true
+rm -rf package/rust* 2>/dev/null || true
+rm -rf package/rustup* 2>/dev/null || true
+echo "Rust 工具链已排除（EasyTier 走预编译二进制，不需要 Rust）"
+
 # --- 4. 添加 EasyTier 2.4.5 feed 源 ---
 # 锁定官方 v2.4.5 tag，确保版本稳定
 grep -q "luci-app-easytier" feeds.conf.default 2>/dev/null || \
@@ -115,6 +129,10 @@ echo "=== 更新 feeds ==="
 # feeds 里也有 luci-app-openclash，install 会建 symlink；
 # 与 package/luci-app-openclash 同名会造成 scan 阶段重复包名，删掉 feed 版
 rm -rf package/feeds/luci/luci-app-openclash 2>/dev/null || true
+
+# feeds install -a 可能又把 rust symlink 建回来，再清一次
+rm -rf package/feeds/packages/rust* 2>/dev/null || true
+rm -rf package/feeds/packages/rustup* 2>/dev/null || true
 
 # --- 8.5 zram-swap 容量 ---
 # 新版 zram-swap（zram.init）默认就是物理内存的一半，无需 patch 源码；
