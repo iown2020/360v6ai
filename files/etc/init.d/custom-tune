@@ -5,7 +5,9 @@
 # 这里只处理 irqbalance 与 sysctl —— 二者是运行时状态，重启即丢失
 # （uci-defaults 只运行一次，放那里重启后就失效）
 # ============================================================
-START=19
+# START=99: 等 firewall (START=42) / nf_conntrack 加载完成再应用 net.netfilter.*
+# 避免 sysctl 写入 conntrack_max 时模块未加载被静默吞掉
+START=99
 
 start() {
     # --- 网络中断负载均衡 ---
@@ -17,8 +19,41 @@ start() {
 
     # --- 内核调优 ---
     # OpenWrt procd 不自动加载 /etc/sysctl.d，需手动 sysctl -p
+    # 先确保 nf_conntrack 已加载，否则 net.netfilter.* 会被 sysctl 静默忽略
     if [ -d /etc/sysctl.d ]; then
-        sysctl -p /etc/sysctl.d/*.conf >/dev/null 2>&1 || true
-        logger -t custom-tune "内核调优已加载（swappiness=1 / backlog=4096 / TFO）"
+        modprobe nf_conntrack 2>/dev/null || true
+        OUT=$(sysctl -p /etc/sysctl.d/*.conf 2>&1) || true
+        # 保留错误输出，便于刷机后定位（比如 BBR/fq 模块缺失）
+        if [ -n "$OUT" ]; then
+            logger -t custom-tune "sysctl: ${OUT}"
+        fi
+        logger -t custom-tune "内核调优已加载（BBR+fq / backlog=4096 / conntrack=65536 / TFO）"
     fi
+
+    # --- OpenClash nameserver 自动对接 SmartDNS ---
+    # uci-defaults 可能在 OpenClash yaml 还没生成时跑过，这里每次开机都重试一次
+    # 检测到 nameserver 段已含 127.0.0.1:6053 就不再改，避免重复写入
+    OC_CONF=""
+    for f in /etc/openclash/config/*.yaml; do
+        [ -f "$f" ] || continue
+        echo "$f" | grep -q '\.bak$' && continue
+        OC_CONF="$f"
+    done
+    [ -n "$OC_CONF" ] || return 0
+    grep -q '127\.0\.0\.1:6053' "$OC_CONF" && return 0   # 已对接，跳过
+
+    # 备份 + awk 更新 nameserver（两种格式都处理）
+    cp -f "$OC_CONF" "${OC_CONF}.bak"
+    awk '
+    /^[[:space:]]*nameserver:[[:space:]]*\[/ {
+        sub(/\[[^]]*\]/, "[127.0.0.1:6053]"); print; next
+    }
+    /^[[:space:]]*nameserver:[[:space:]]*$/ {
+        in_ns=1; print "nameserver:"; print "    - 127.0.0.1:6053"; next
+    }
+    /^[[:space:]]*-[[:space:]]/ { if (in_ns) next; print; next }
+    { if (in_ns && $0 !~ /^[[:space:]]/) in_ns=0; print }
+    ' "$OC_CONF" > "${OC_CONF}.tmp" && mv -f "${OC_CONF}.tmp" "$OC_CONF"
+    /etc/init.d/openclash restart 2>/dev/null || true
+    logger -t custom-tune "OpenClash nameserver 自动对接 SmartDNS: ${OC_CONF}"
 }
