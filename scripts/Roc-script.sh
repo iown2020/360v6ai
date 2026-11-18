@@ -1,16 +1,38 @@
 #!/bin/bash
+
 # ============================================================
+
 # 360V6 (qihoo_360v6) OpenWRT NSS 固件 - 加固精简版 自定义编译脚本
+
 # 源码: laipeng668/openwrt-6.x 25.12-nss 分支 (Linux 6.12 + 全功能 NSS)
+
 # 核心: OpenClash + EasyTier 2.4.5 组网 + NSS ECM 硬件加速
+
 # 加固: CPU 1.2GHz 锁频 / WPA2-PSK 纯协议 / 射频功率保护 / 防掉电
+
 # ============================================================
 
 set -e
 
+# --- 0. 换 OpenWrt 源码下载镜像 ---
+
+# OpenWrt 源码包（toolchain tarball / kernel / 各种第三方包）默认从
+
+# downloads.openwrt.org 下载，海外 CI 容易限速；换成清华镜像，失败时自动回退
+
+# 注意: Roc-script 在 openwrt/ 目录里执行，dl/Makefile 在源码树里
+if [ -f dl/Makefile ]; then
+    sed -i 's|https://downloads.openwrt.org|https://mirrors.tuna.tsinghua.edu.cn/openwrt|g' dl/Makefile 2>/dev/null || true
+    sed -i 's|http://downloads.openwrt.org|https://mirrors.tuna.tsinghua.edu.cn/openwrt|g' dl/Makefile 2>/dev/null || true
+    echo "OpenWrt 源码包下载镜像已换成清华（失败自动回退）"
+else
+    echo "[WARN] dl/Makefile 不存在，跳过 OpenWrt 镜像换源（clone 完源码才会出现）"
+fi
+
 echo "=== 开始加载自定义配置 ==="
 
 # --- 1. 修改默认 IP 和主机名 ---
+
 # 默认 IP 改为 192.168.50.1（与加固脚本一致）
 sed -i 's/192.168.1.1/192.168.50.1/g' package/base-files/files/bin/config_generate
 sed -i "s/hostname='.*'/hostname='Openwrt'/g" package/base-files/files/bin/config_generate
@@ -27,6 +49,7 @@ if [ -f "package/lean/default-settings/files/zzz-default-settings" ]; then
 fi
 
 # --- 3. 移除不需要的 LuCI 应用源码 ---
+
 # PassWall 全套（与 OpenClash 功能重复）
 rm -rf feeds/luci/applications/luci-app-passwall 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-passwall2 2>/dev/null || true
@@ -60,6 +83,7 @@ rm -rf feeds/luci/applications/luci-app-acme 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-arpbind 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-usb-printer 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-watchcat 2>/dev/null || true
+
 # luci-app-smartdns 已不再移除 —— 固件内置 SmartDNS 作为 DNS 加速解析插件
 rm -rf feeds/luci/applications/luci-app-zerotier 2>/dev/null || true
 rm -rf package/luci-app-lucky 2>/dev/null || true
@@ -68,20 +92,26 @@ rm -rf package/luci-app-gecoosac 2>/dev/null || true
 rm -rf package/luci-app-athena-led 2>/dev/null || true
 
 # --- 3.5 NSS 冲突清理 ---
+
 # shortcut-fe 是软件快速路径，与高通 NSS ECM 硬件快速路径冲突，必须移除
-# 覆盖常见的 3 个可能位置（不同 feed 源放置位置不同）
 rm -rf feeds/kiddin9/shortcut-fe 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-shortcut-fe 2>/dev/null || true
 rm -rf package/shortcut-fe 2>/dev/null || true
 rm -rf package/luci-app-shortcut-fe 2>/dev/null || true
-# wpad 切 mbedtls 版（体积更小，WPA2/WPA3 个人版均支持）
+
+# wpad 切 mbedtls 版
 sed -i "s/wpad-openssl/wpad-mbedtls/g" target/linux/qualcommax/Makefile 2>/dev/null || true
 
 # --- 3.6 排除 Rust 工具链（根治 ci-artifacts 404）---
+
 # packages feed 的 lang/rust 会被 feeds install -a 无差别 symlink 进来，
+
 # 然后 OpenWrt make world 会编它的 host 版；Rust bootstrap 默认 download-ci-llvm=true，
+
 # 从 ci-artifacts.rust-lang.org 下载 CI 预编译 LLVM，旧版本 artifact 被官方清理后 404 失败。
+
 # 我们的 EasyTier 用预编译二进制（Build/Compile 为空，Build/Prepare 是 wget zip），
+
 # 根本不需要 Rust 工具链，直接删掉 rust* 所有目录/symlink 即可。
 rm -rf feeds/packages/lang/rust 2>/dev/null || true
 rm -rf feeds/packages/lang/rustup 2>/dev/null || true
@@ -92,14 +122,11 @@ rm -rf package/rustup* 2>/dev/null || true
 echo "Rust 工具链已排除（EasyTier 走预编译二进制，不需要 Rust）"
 
 # --- 4. 添加 EasyTier 2.4.5 feed 源 ---
-# 锁定官方 v2.4.5 tag，确保版本稳定
 grep -q "luci-app-easytier" feeds.conf.default 2>/dev/null || \
     echo "src-git easytier https://github.com/EasyTier/luci-app-easytier.git;v2.4.5" >> feeds.conf.default
 echo "EasyTier v2.4.5 feed 已添加"
 
 # --- 5. 克隆 Aurora 主题 ---
-# 必须放 package/ 直编：clone 到 feeds/luci/themes/ 会被随后的
-# feeds update -a 重建 luci feed 时清掉，导致包缺失、配置静默失效
 echo "=== 克隆 Aurora 主题 ==="
 rm -rf feeds/luci/themes/luci-theme-aurora package/luci-theme-aurora
 git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora package/luci-theme-aurora
@@ -118,7 +145,7 @@ if [ -d "$GITHUB_WORKSPACE/files" ]; then
     cp -rf $GITHUB_WORKSPACE/files .
     chmod +x files/etc/uci-defaults/* 2>/dev/null || true
     chmod +x files/etc/init.d/* 2>/dev/null || true
-    echo "加固 files 已复制（CPU锁频/WPA2纯协议/射频保护/内存保护）"
+    echo "加固 files 已复制"
 fi
 
 # --- 8. 更新并安装 feeds ---
@@ -126,17 +153,12 @@ echo "=== 更新 feeds ==="
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-# feeds 里也有 luci-app-openclash，install 会建 symlink；
-# 与 package/luci-app-openclash 同名会造成 scan 阶段重复包名，删掉 feed 版
+# feeds install -a 可能又把这些 symlink 建回来，再清一次
 rm -rf package/feeds/luci/luci-app-openclash 2>/dev/null || true
-
-# feeds install -a 可能又把 rust symlink 建回来，再清一次
 rm -rf package/feeds/packages/rust* 2>/dev/null || true
 rm -rf package/feeds/packages/rustup* 2>/dev/null || true
 
 # --- 8.5 zram-swap 容量 ---
-# 新版 zram-swap（zram.init）默认就是物理内存的一半，无需 patch 源码；
-# 固件要求固定 256MB + LZ4，统一在 files/etc/uci-defaults/99-custom-stability 中设置
 echo "zram 容量由 uci-defaults 固定为 256MB（LZ4）"
 
 echo "=== 自定义配置加载完成 ==="
