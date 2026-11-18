@@ -60,7 +60,7 @@ rm -rf feeds/luci/applications/luci-app-acme 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-arpbind 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-usb-printer 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-watchcat 2>/dev/null || true
-rm -rf feeds/luci/applications/luci-app-smartdns 2>/dev/null || true
+# luci-app-smartdns 已不再移除 —— 固件内置 SmartDNS 作为 DNS 加速解析插件
 rm -rf feeds/luci/applications/luci-app-zerotier 2>/dev/null || true
 rm -rf package/luci-app-lucky 2>/dev/null || true
 rm -rf package/openlist2 2>/dev/null || true
