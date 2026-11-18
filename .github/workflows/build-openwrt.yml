@@ -33,6 +33,13 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          # Ubuntu 镜像换阿里云，避开 us-east-2.ec2.archive.ubuntu.com 限速（96.9 kB/s 那种）
+          # runner 是 Ubuntu 24.04 noble，sources 可能是 DEB822 格式（ubuntu.sources）或传统格式
+          sudo sed -i 's|http://us-east-2.ec2.archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+          sudo sed -i 's|http://us-east-2.ec2.archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list 2>/dev/null || true
+          # 有时 runner 用 archive.ubuntu.com 而非 ec2 镜像，顺手也换掉
+          sudo sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+          sudo sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list 2>/dev/null || true
           sudo -E apt-get -y update
           sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
           sudo -E systemctl daemon-reload
