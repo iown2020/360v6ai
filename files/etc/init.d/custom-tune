@@ -3,7 +3,6 @@
 # 360V6 每次开机执行的运行时调优
 # CPU 调频交给 cpufreq 服务（/etc/config/cpufreq：performance / 864MHz-1.2GHz），
 # 这里只处理 irqbalance、sysctl
-# AdGuard Home 由 init 脚本自带的 procd 守护 + dns_mode.sh apply/reverse 处理，不需要额外守护
 # uci-defaults 只在首次开机跑一次，下面三件事是运行时状态，重启即丢，
 # 必须每次开机都重新应用
 # ============================================================
