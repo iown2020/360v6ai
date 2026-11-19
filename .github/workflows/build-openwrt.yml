@@ -168,9 +168,6 @@ jobs:
             || echo "[WARN] kmod-tcp-bbr 未生效，刷机后 BBR 将回退默认 cubic"
           grep -q '^CONFIG_PACKAGE_kmod-sched-core=y' .config \
             || echo "[WARN] kmod-sched-core 未生效，刷机后 fq 队列将回退默认 mq"
-          # AdGuard Home 是 DNS 加速链路核心组件，缺失会导致 dnsmasq 转发目标不存在
-          grep -q '^CONFIG_PACKAGE_adguardhome=y' .config \
-            || { echo "[FAIL] adguardhome 主包未启用"; FAIL=1; }
           grep -q '^CONFIG_PACKAGE_luci-app-adguardhome-lite=y' .config \
             || { echo "[FAIL] luci-app-adguardhome-lite 未启用"; FAIL=1; }
           [ $FAIL -eq 1 ] && { echo "=== 预检失败，终止（避免无效编译） ==="; exit 1; }
@@ -240,7 +237,7 @@ jobs:
             ## 预装插件
             - **管理**：LuCI 简体中文 + Aurora 主题
             - **加速**：NSS 全套驱动 + ECM（fw4 软件/硬件分流已关闭，由 NSS 独占）
-            - **DNS 加速 + 广告过滤**：AdGuard Home Lite（默认禁用，LuCI → 服务 → AdGuard Home Lite 勾选启用；启用后 init 自动 apply 端口 patch + dnsmasq 转发；4 个预设上游含国内 UDP 直连）
+            - **DNS**：luci-app-adguardhome-lite（仅安装 LuCI 界面，出厂未启用、无内核、未做任何 DNS 配置，保持系统默认 DNS）
             - **代理**：OpenClash
             - **组网**：EasyTier 2.4.5
             - **共享**：Samba4 + USB 存储（ext4 / vfat / msdos，自动挂载）
