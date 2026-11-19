@@ -240,6 +240,7 @@ jobs:
             ## 预装插件
             - **管理**：LuCI 简体中文 + Aurora 主题
             - **加速**：NSS 全套驱动 + ECM（fw4 软件/硬件分流已关闭，由 NSS 独占）
+            - **DNS 加速 + 广告过滤**：AdGuard Home Lite（默认禁用，LuCI → 服务 → AdGuard Home Lite 勾选启用；启用后 init 自动 apply 端口 patch + dnsmasq 转发；4 个预设上游含国内 UDP 直连）
             - **代理**：OpenClash
             - **组网**：EasyTier 2.4.5
             - **共享**：Samba4 + USB 存储（ext4 / vfat / msdos，自动挂载）
