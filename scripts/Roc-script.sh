@@ -60,7 +60,7 @@ rm -rf feeds/luci/applications/luci-app-acme 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-arpbind 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-usb-printer 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-watchcat 2>/dev/null || true
-# luci-app-smartdns 已移除 —— 固件改用 AdGuard Home + luci-app-adguardhome-lite
+# luci-app-smartdns 已移除 —— 固件改用 luci-app-adguardhome-lite（仅安装界面，不做配置）
 rm -rf feeds/luci/applications/luci-app-zerotier 2>/dev/null || true
 rm -rf package/luci-app-lucky 2>/dev/null || true
 rm -rf package/openlist2 2>/dev/null || true
@@ -98,12 +98,18 @@ echo "=== 克隆最新 OpenClash ==="
 rm -rf feeds/luci/applications/luci-app-openclash
 git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
 
-# --- 6.5 克隆 luci-app-adguardhome-lite（Ozero-top 版，内置 dns_mode 自动处理 dnsmasq）---
-# 官方 feed 里只有 adguardhome 二进制包，LuCI 界面是第三方
+# --- 6.5 克隆 luci-app-adguardhome-lite（仅安装 LuCI 界面，不做任何配置）---
+# 该仓库根目录不是包目录，真正的 OpenWrt 包在 src/luci-app-adguardhome-lite/
+#   （根目录是 install.sh + docs + tools 的工程结构），必须取子目录
 echo "=== 克隆 luci-app-adguardhome-lite ==="
-rm -rf package/luci-app-adguardhome-lite
-git clone --depth=1 https://github.com/Ozero-top/luci-app-adguardhome-lite package/luci-app-adguardhome-lite
-[ -f package/luci-app-adguardhome-lite/Makefile ] || { echo "[ERROR] luci-app-adguardhome-lite 源码拉取失败"; exit 1; }
+rm -rf package/luci-app-adguardhome-lite /tmp/agh-lite-src
+git clone --depth=1 https://github.com/Ozero-top/luci-app-adguardhome-lite /tmp/agh-lite-src
+[ -f /tmp/agh-lite-src/src/luci-app-adguardhome-lite/Makefile ] \
+    || { echo "[ERROR] luci-app-adguardhome-lite 仓库结构变化：src/luci-app-adguardhome-lite/Makefile 不存在"; exit 1; }
+cp -rf /tmp/agh-lite-src/src/luci-app-adguardhome-lite package/luci-app-adguardhome-lite
+[ -f package/luci-app-adguardhome-lite/Makefile ] \
+    || { echo "[ERROR] luci-app-adguardhome-lite 源码复制失败"; exit 1; }
+echo "luci-app-adguardhome-lite 就绪: package/luci-app-adguardhome-lite ($(cat package/luci-app-adguardhome-lite/VERSION 2>/dev/null))"
 
 # --- 7. 复制 files 目录（加固脚本 + sysctl 内存保护）---
 if [ -d "$GITHUB_WORKSPACE/files" ]; then
