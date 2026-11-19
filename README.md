@@ -41,7 +41,7 @@
 | **运维插件** | luci-app-wol（网络唤醒）、luci-app-autoreboot（定时重启）、luci-app-upnp、autocore（硬件状态） |
 | **CPU 调频** | cpufreq 服务 + luci-app-cpufreq：performance 策略，864MHz~1.2GHz（默认值写入 `/etc/config/cpufreq`，界面可调） |
 | **交换分区** | zram-swap（256MB / LZ4） |
-| **DNS 加速** | **AdGuard Home + luci-app-adguardhome-lite**（Ozero-top 版，内置 dns_mode 自动处理 dnsmasq；默认禁用，LuCI 里手动启用；启用后 init 自动 apply 端口/patch/YAML + 自动设 dnsmasq 转发）+ 4 个预设上游（阿里 UDP + 腾讯 UDP + 阿里 DoH + Cloudflare DoH）+ 免费广告过滤（blocking.enabled=true）|
+| **DNS 插件** | luci-app-adguardhome-lite（仅安装 LuCI 界面：未启用、未装内核、未做任何 DNS 配置） |
 | **内核调优** | BBR + fq 拥塞控制、16MB TCP 缓冲、65536 conntrack、PMTU 探测等（`/etc/sysctl.d/99-kernel-tune.conf`，每次开机由 `custom-tune` 服务加载） |
 
 ---
@@ -79,37 +79,22 @@
 - 原厂默认 **5 秒 3 次** 激进 LCP keepalive，链路轻微抖动即触发重拨；**完全关闭**又会让链路假死只能靠重启恢复
 - 改为**温和保活**：每 10 秒探测一次，连续 5 次无响应才重拨（`keepalive='10 5'`）
 
-### 6. DNS 加速链路（方案 B：配置预置、默认禁用、LuCI 手动启用）
+### 6. DNS 插件（仅安装，不做任何配置）
 
-出厂只写配置，**不启动插件**，避免首次开机和 dnsmasq 抢端口冲突。LuCI 里点启用后由插件 init 自动 apply 完整链路：
+固件只把 `luci-app-adguardhome-lite` 装进系统，**不改动任何 DNS 设置**：
 
+- 不写 `/etc/config/adguardhome_lite`（界面首次打开时用它自带的默认值）
+- 不启用、不设 dns_mode、不配上游、不预置 YAML、不下载内核
+- dnsmasq 保持系统默认链路：客户端 → dnsmasq(53) → WAN 下发的运营商 DNS
+
+因此刷完机 DNS 行为和原版一致，不会出现插件未运行却把 dnsmasq 指向空端口导致断网的情况。要用时在 LuCI 里自行打开、自行安装内核、自行选择模式。
+
+唯一保留的 DNS 相关改动是 dnsmasq 基础缓存参数（与本插件无关）：
+
+```sh
+uci set dhcp.@dnsmasq[0].cachesize='2000'
+# + rebind_domain 白名单：msftncsi.com / ipv6.msftncsi.com / ntp.org.cn
 ```
-启用前（首次开机，dnsmasq 保持默认）：
-客户端 DNS → dnsmasq(53) → 运营商默认上游 → ✅ 不碰、零冲突
-
-启用后（LuCI 点启用，init 自动 apply）：
-客户端 DNS
-  └─→ dnsmasq (noresolv=1 + cachesize=2000 + rebind 保护)
-        └─→ AdGuard Home (127.0.0.1:5333)
-              ├─→ 国内 UDP 223.5.5.5 / 119.29.29.29 (测速选最快)
-              └─→ 国外 DoH dns.alidns.com / 1.1.1.1 (测速选最快)
-```
-
-为什么用 luci-app-adguardhome-lite（Ozero-top 版）而不是其他方案：
-- **dns_mode 自动处理 dnsmasq**：`dns_mode='upstream'` 模式下，init 启动时自动 `patch_agh_port`（把 YAML port 从模板的 53 patch 成 5333）+ 自动设 dnsmasq 的 noresolv/server，停止时 `reverse` 自动恢复原值，**不留残留**
-- **procd 完整状态机**：进程挂了 procd 自动拉起，幂等 apply/reverse，不需要额外守护脚本
-- **内置 OpenClash/PassWall 适配**：如果后续启用科学上网，dns_mode 可一键切 openclash/passwall/clashfirst，自动处理 DNS 串联
-
-出厂写入的默认配置（LuCI 启用后生效）：
-- UCI（`/etc/config/adguardhome_lite`，section `adguardhome_lite.main`）：`enabled=0`、`dns_mode='upstream'`、`webport=13800`、`workdir=/etc/AdGuardHome`（持久化）、`cache_enabled=1`、`cache_size_mb=32`、`github_proxy='gh-proxy.org'`
-- YAML（`/etc/AdGuardHome.yaml`，port 字段**故意不写**，让插件 init 的 `patch_agh_port` 自动 patch 成 5333）：4 个 `upstream_dns`、`bootstrap_dns` 同 2 个国内 UDP、`blocking.enabled=true`（免费广告过滤）
-- dnsmasq 基础优化：`cachesize=2000` + `rebind_domain` 白名单（msftncsi.com 等），**首次开机就写**（和 AdGuard Home 成败无关，始终安全）
-
-LuCI 启用后做什么（全部自动）：
-1. init `start()` → `dns_mode.sh apply`：patch YAML port=5333 → 清 dnsmasq 其他 server → 设 `noresolv=1` → 加 `server=127.0.0.1#5333` → 重启 dnsmasq
-2. 停止/禁用时 `dns_mode.sh reverse`：把 dnsmasq 恢复到 apply 之前的状态（由 `save_original` 先保存）
-
-首次 Web UI 登录：`http://192.168.50.1:13800`，用户名密码 UCI 里是 `admin/admin123`（**登录后立即改密码**，UCI 里是明文）。
 
 ### 7. 运行时调优服务（custom-tune，每次开机）
 
@@ -144,7 +129,7 @@ LuCI 启用后做什么（全部自动）：
 
 - 编译预计耗时：**1~2 小时**（首次编译；后续有三层缓存加速：ccache 编译缓存 + staging_dir 工具链 + `dl/` 源码包缓存，dl 按源码分支复用，不再每次重下）
 - 编译成功后自动创建 **Release**（标签 `R<构建序号>`），在仓库 **Releases** 页下载固件、`sha256sums`、`config.buildinfo`
-- 编译前有**预检**：设备目标、512M profile、Aurora、仪表盘、cpufreq、zram-swap/kmod-zram/LZ4 后端、AdGuard Home 主包 + luci-app-adguardhome-lite，任一缺失立即 FAIL，不会白跑几小时；BBR/fq 等为 WARN 级只告警不阻断
+- 编译前有**预检**：设备目标、512M profile、Aurora、仪表盘、cpufreq、zram-swap/kmod-zram/LZ4 后端、luci-app-adguardhome-lite，任一缺失立即 FAIL，不会白跑几小时；BBR/fq 等为 WARN 级只告警不阻断
 - 编译失败会在该次运行页面底部 **Artifacts** 中提供 `build-failed-log`
 
 ---
@@ -204,36 +189,25 @@ cat /sys/block/zram0/disksize 2>/dev/null
 cat /sys/block/zram0/comp_algorithm   # 期望 [lz4]
 ```
 
-### 验证 DNS 加速链路
-
-方案 B：首次开机 **AdGuard Home 默认禁用**，LuCI → 服务 → AdGuard Home Lite → 勾启用 → 保存并应用后跑：
+### 验证 DNS 插件（仅安装，未配置）
 
 ```sh
-# 1. UCI 已就位（首次开机就有，只是 enabled=0）
-uci get adguardhome_lite.main.enabled       # 启用前: 0 / 启用后: 1
-uci get adguardhome_lite.main.dns_mode      # upstream（固定）
-uci get adguardhome_lite.main.webport       # 13800（Web UI）
-uci get adguardhome_lite.main.cache_size_mb # 32
+# 1. 插件已安装
+apk list --installed 2>/dev/null | grep adguardhome-lite
 
-# 2. YAML 已就位（port 不写，init 会 patch 成 5333）
-grep 'port:' /etc/AdGuardHome.yaml
-# 启用前: 没输出（或只有注释）
-# 启用后: port: 5333（init patch 的）
-grep 'upstream_dns:' -A 5 /etc/AdGuardHome.yaml | head -10
-# 期望看到 223.5.5.5 / 119.29.29.29 / dns.alidns.com / 1.1.1.1
+# 2. 出厂未写配置、未启用（没有 /etc/config/adguardhome_lite 或 enabled=0）
+uci -q get adguardhome_lite.main.enabled    # 没输出或 0
 
-# 3. 5333 监听 + dnsmasq 自动转发
-netstat -uln | grep 5333                   # 启用前: 没输出 / 启用后: udp :::5333
-uci get dhcp.@dnsmasq[0].noresolv          # 启用前: 没设或 0 / 启用后: 1
-uci get dhcp.@dnsmasq[0].server            # 启用前: 没设 / 启用后: 127.0.0.1#5333
+# 3. dnsmasq 保持系统默认（未被本插件改动）
+uci get dhcp.@dnsmasq[0].noresolv           # 没设
+uci get dhcp.@dnsmasq[0].server             # 没设
 
-# 4. dnsmasq 基础优化（首次开机就写，和启用状态无关）
-uci get dhcp.@dnsmasq[0].cachesize         # 2000
-uci get dhcp.@dnsmasq[0].rebind_domain    # 包含 msftncsi.com 等
+# 4. 基础缓存参数（与插件无关，固件默认值）
+uci get dhcp.@dnsmasq[0].cachesize          # 2000
+uci get dhcp.@dnsmasq[0].rebind_domain     # 包含 msftncsi.com 等
 
-# 5. 实际解析
-nslookup www.baidu.com                     # 快速返回真实 IP
-nslookup github.com                        # 真实 IP，不是污染假 IP
+# 5. 解析正常走系统默认上游
+nslookup www.baidu.com
 
 # 6. 内核调优
 sysctl net.ipv4.tcp_congestion_control     # 期望 bbr
@@ -248,15 +222,9 @@ logread -t custom-tune
 # 期望看到: irqbalance 已启动 / 内核调优已加载
 ```
 
-### 停止/禁用 AdGuard Home
+### 停止/禁用（若你自行启用过）
 
-LuCI 里取消勾选启用 → 保存并应用，init 的 `dns_mode.sh reverse` 自动恢复 dnsmasq：
-
-```sh
-# reverse 自动完成，不需要手动操作
-uci get dhcp.@dnsmasq[0].noresolv          # 应回到 0 或没设
-uci get dhcp.@dnsmasq[0].server            # 应清除 127.0.0.1#5333
-```
+由插件自己处理：取消勾选启用后，其 init 会把 dnsmasq 恢复到启用前的状态，无需手动改 UCI。
 
 ---
 
@@ -270,7 +238,7 @@ uci get dhcp.@dnsmasq[0].server            # 应清除 127.0.0.1#5333
 │   └── General.config                    # 预装/禁用软件包列表
 ├── scripts/Roc-script.sh                 # 编译前：改 IP、Aurora、OpenClash、EasyTier feed、files 复制
 ├── files/
-│   ├── etc/uci-defaults/99-custom-stability  # 首次开机：cpufreq/Wi-Fi/射频/防火墙/ECM/DNS 配置预置(AdGuard Home UCI+YAML+默认禁用)/主题/zram
+│   ├── etc/uci-defaults/99-custom-stability  # 首次开机：cpufreq/Wi-Fi/射频/防火墙/ECM/dnsmasq 缓存/主题/zram
 │   ├── etc/config/cpufreq                    # cpufreq 默认值：performance / 864-1200MHz
 │   ├── etc/init.d/custom-tune                # 每次开机：irqbalance + sysctl(99-kernel-tune.conf)
 │   └── etc/sysctl.d/99-kernel-tune.conf      # 内核内存保护 + BBR/fq + TCP 缓冲 + conntrack + PMTU 探测
@@ -287,4 +255,4 @@ uci get dhcp.@dnsmasq[0].server            # 应清除 127.0.0.1#5333
 - [OpenClash 官方仓库](https://github.com/vernesong/OpenClash)
 - [EasyTier 官方仓库](https://github.com/EasyTier/EasyTier)
 - [Aurora 主题](https://github.com/eamonxg/luci-theme-aurora)
-- [luci-app-adguardhome-lite（Ozero-top 版）](https://github.com/Ozero-top/luci-app-adguardhome-lite) — 本工程使用的 AdGuard Home LuCI 界面，内置 5 种 dns_mode 自动处理 dnsmasq
+- [luci-app-adguardhome-lite（Ozero-top 版）](https://github.com/Ozero-top/luci-app-adguardhome-lite) — 本工程仅安装其 LuCI 界面包（源码在仓库 `src/` 子目录）
