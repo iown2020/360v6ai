@@ -5,8 +5,6 @@
 # ============================================================
 
 # --- 1. CPU 调频（cpufreq 服务：performance + 上限 1.2GHz）---
-# cpufreq 是持久化的 uci 配置 + 开机服务（START=15），锁频不再靠一次性写 sysfs。
-# 包自带的 10-cpufreq 会按平台把 qualcommax 写成 schedutil，故置 global.set=1 跳过其默认值。
 uci -q set cpufreq.cpufreq.governor0='performance'
 uci -q set cpufreq.cpufreq.minfreq0='864000'
 uci -q set cpufreq.cpufreq.maxfreq0='1200000'
@@ -16,7 +14,6 @@ uci -q commit cpufreq
 echo "[加固] cpufreq 已设为 performance / 864MHz-1.2GHz"
 
 # --- 2. Wi-Fi 默认配置 ---
-# SSID: 2024 / 密码: 20242024 / 纯 WPA2-PSK / 关 PMF & SAE
 [ -s /etc/config/wireless ] || wifi config >/dev/null 2>&1
 for iface in $(uci show wireless 2>/dev/null | grep '=wifi-iface' | cut -d. -f2 | cut -d= -f1); do
     uci set wireless.${iface}.ssid='2024'
@@ -29,8 +26,7 @@ for iface in $(uci show wireless 2>/dev/null | grep '=wifi-iface' | cut -d. -f2 
     uci set wireless.${iface}.isolate='0'
 done
 
-# --- 3. 射频国家码/功率/信道/带宽（防 FEM 过热 + 稳空口效率）---
-# 按 band 判定，不依赖 radio0/radio1 的枚举顺序（不同 DTS 下 phy 顺序可能相反）
+# --- 3. 射频国家码/功率/信道/带宽 ---
 for dev in $(uci show wireless 2>/dev/null | grep '=wifi-device' | cut -d. -f2 | cut -d= -f1); do
     uci set wireless.${dev}.country='CN'
     band="$(uci -q get wireless.${dev}.band)"
@@ -54,19 +50,16 @@ done
 uci commit wireless
 echo "[加固] Wi-Fi SSID=2024 / 纯 WPA2-PSK / 5G 23dBm HE80 ch36 / 2.4G 20dBm HE20 ch1"
 
-# --- 4. 关闭 fw4 软件/硬件分流，让 NSS ECM 独占硬件加速 ---
+# --- 4. 关闭 fw4 软件/硬件分流 ---
 uci -q set firewall.@defaults[0].flow_offloading='0'
 uci -q set firewall.@defaults[0].flow_offloading_hw='0'
 uci -q set firewall.@defaults[0].fullcone='0'
 uci -q set firewall.@defaults[0].fullcone6='0'
 uci -q commit firewall
-
 uci -q set network.globals.packet_steering='0'
 echo "[加固] fw4 分流/硬件分流/Packet Steering 已关闭（避让 NSS ECM）"
 
 # --- 5. PPPoE LCP 温和保活 ---
-# 原厂默认 5 秒 3 次过于激进，链路轻微抖动即触发重拨；
-# 但完全删除 keepalive 会让链路假死只能靠重启恢复，这里取中间值
 uci -q set network.wan.keepalive='10 5'
 uci -q commit network
 echo "[加固] PPPoE LCP 保活已改为 10s/5 次（温和重拨阈值）"
@@ -79,89 +72,103 @@ uci -q commit ecm
 /etc/init.d/qca-nss-ecm restart 2>/dev/null || true
 echo "[加固] NSS ECM 硬件流表已启用"
 
-# --- 7. DNS 加速（SmartDNS，UCI 模型 + 失败自动回滚）---
-# 关键修正:
-#   1. smartdns 的 init 脚本从 /etc/config/smartdns 生成运行配置，
-#      手写 /etc/smartdns/smartdns.conf 不会被读取（上一版踩过这个坑）
-#   2. 启动后验证 6053 是否真的在监听；失败就回滚 dnsmasq，绝不让 DNS 断
-#   3. 只在验证通过后才把 dnsmasq 指向 SmartDNS
-
-if [ -x /etc/init.d/smartdns ] && [ -f /usr/sbin/smartdns ]; then
-    # 7a. 主配置
-    if ! uci -q get smartdns.@smartdns[0] >/dev/null 2>&1; then
-        uci add smartdns smartdns >/dev/null
-        uci commit smartdns
+# --- 7. DNS 加速（AdGuard Home + luci-app-adguardhome-lite）---
+# Ozero-top 版自带 5 种 dns_mode，upstream 模式让 init 自动设 dnsmasq 转发
+# AGH 监听 3053（避开 takeover 抢 53 的风险），dnsmasq 继续在 53
+if [ -x /etc/init.d/adguardhome_lite ] && [ -f /usr/bin/AdGuardHome/AdGuardHome ]; then
+    # 7a. UCI 字段（luci-app-adguardhome-lite init 读 /etc/config/adguardhome_lite）
+    if ! uci -q get adguardhome_lite.main >/dev/null 2>&1; then
+        uci add adguardhome_lite main >/dev/null
+        uci commit adguardhome_lite
     fi
-    uci set smartdns.@smartdns[0].enabled='1'
-    uci set smartdns.@smartdns[0].port='6053'
-    uci set smartdns.@smartdns[0].auto_set_dnsmasq='1'
-    uci set smartdns.@smartdns[0].tcp_server='1'
-    uci set smartdns.@smartdns[0].ipv6_server='0'
-    uci set smartdns.@smartdns[0].cache_size='8192'
-    uci set smartdns.@smartdns[0].cache_persist='1'
-    uci set smartdns.@smartdns[0].prefetch_domain='1'
-    uci set smartdns.@smartdns[0].speed_check_mode='ping,tcp:443'
+    uci set adguardhome_lite.main.enabled='0'                # 方案 B：默认不启用，LuCI 里手动开
+    uci set adguardhome_lite.main.dns_mode='upstream'          # init 自动设 dnsmasq 转发
+    uci set adguardhome_lite.main.webport='13800'
+    uci set adguardhome_lite.main.binpath='/usr/bin/AdGuardHome/AdGuardHome'
+    uci set adguardhome_lite.main.config='/etc/AdGuardHome.yaml'
+    uci set adguardhome_lite.main.workdir='/etc/AdGuardHome'   # 持久化（默认 /tmp 重启丢）
+    uci set adguardhome_lite.main.channel='stable'
+    uci set adguardhome_lite.main.github_proxy='gh-proxy.org'
+    # admin/admin123 是首次 Web UI 登录用的，LuCI 里可以改
+    uci set adguardhome_lite.main.adminuser='admin'
+    uci set adguardhome_lite.main.adminpass='admin123'
+    # 缓存 32MB（比默认 16MB 大一倍，内存充足）
+    uci set adguardhome_lite.main.cache_enabled='1'
+    uci set adguardhome_lite.main.cache_size_mb='32'
+    uci commit adguardhome_lite
 
-    # 7b. 上游 DNS（先清空旧的 server 段，避免重复叠加）
-    while uci -q delete smartdns.@server[0]; do :; done
+    # 7b. YAML 原生配置（AdGuard Home 二进制读 /etc/AdGuardHome.yaml）
+    # 注意：port 字段不要写！dns_mode.sh apply 会自动 patch 成 $dnsport（upstream 模式=5333）
+    YAML_PATH="/etc/AdGuardHome.yaml"
+    cat > "$YAML_PATH" <<'EOF'
+dns:
+  bind_hosts:
+  - 0.0.0.0
+  - ::
+  # port 由 dns_mode.sh 自动 patch，不要硬写
+  ratelimit: 0
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 64
+anonymize_client_ip: false
+blocking:
+  enabled: true
+  block_ttl: 3600
+  http_block_response:
+    enabled: true
+  safest_search:
+    enabled: false
+  parental_control:
+    enabled: false
+  dnsrewrite: []
+filters: []
+rewrites: []
+services: []
+upstream_dns:
+- 223.5.5.5
+- 119.29.29.29
+- https://dns.alidns.com/dns-query
+- https://1.1.1.1/dns-query
+bootstrap_dns:
+- 223.5.5.5
+- 119.29.29.29
+all_servers: false
+EOF
 
-    uci add smartdns server >/dev/null
-    uci set smartdns.@server[-1].enabled='1'
-    uci set smartdns.@server[-1].name='aliyun'
-    uci set smartdns.@server[-1].type='udp'
-    uci set smartdns.@server[-1].ip='223.5.5.5'
-    uci set smartdns.@server[-1].port='53'
-
-    uci add smartdns server >/dev/null
-    uci set smartdns.@server[-1].enabled='1'
-    uci set smartdns.@server[-1].name='tencent'
-    uci set smartdns.@server[-1].type='udp'
-    uci set smartdns.@server[-1].ip='119.29.29.29'
-    uci set smartdns.@server[-1].port='53'
-
-    uci commit smartdns
-
-    # 7c. 启动并验证（最多等 5 秒）
-    /etc/init.d/smartdns enable 2>/dev/null || true
-    /etc/init.d/smartdns restart 2>/dev/null || true
-    DNS_OK=0
-    for i in 1 2 3 4 5; do
-        sleep 1
-        if netstat -uln 2>/dev/null | grep -q ':6053'; then
-            DNS_OK=1
-            break
-        fi
-    done
-
-    if [ "$DNS_OK" = "1" ]; then
-        # 验证通过，才把 dnsmasq 指过去
-        uci -q delete dhcp.@dnsmasq[0].server
-        uci -q add_list dhcp.@dnsmasq[0].server='127.0.0.1#6053'
-        uci -q set dhcp.@dnsmasq[0].noresolv='1'
-        uci -q commit dhcp
-        /etc/init.d/dnsmasq restart 2>/dev/null || true
-        echo "[加固] SmartDNS 已启用: 127.0.0.1:6053（dnsmasq 转发）"
-    else
-        # 7d. 回滚：SmartDNS 没起来，恢复 dnsmasq 默认解析
-        logger -t custom-stability "SmartDNS 未监听 6053，自动回滚 dnsmasq"
-        uci set smartdns.@smartdns[0].enabled='0'
-        uci commit smartdns
-        /etc/init.d/smartdns stop 2>/dev/null || true
-        /etc/init.d/smartdns disable 2>/dev/null || true
-
-        uci -q delete dhcp.@dnsmasq[0].server
-        uci -q set dhcp.@dnsmasq[0].noresolv='0'
-        uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
-        uci -q set dhcp.@dnsmasq[0].domainneeded='1'
-        uci -q commit dhcp
-        /etc/init.d/dnsmasq restart 2>/dev/null || true
-        echo "[加固][WARN] SmartDNS 启动失败，已回滚到默认 DNS"
-    fi
+    # 7c. 启动并验证 —— 方案 B：注释掉，LuCI 里手动启用
+    # UCI 配置（dns_mode/upstream/blocking）和 YAML 已就位，LuCI 点启用后 init 会自动 apply
+    # /etc/init.d/adguardhome_lite enable 2>/dev/null || true
+    # /etc/init.d/adguardhome_lite restart 2>/dev/null || true
+    # AGH_OK=0
+    # for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    #     sleep 1
+    #     if netstat -uln 2>/dev/null | grep -q ':5333'; then
+    #         AGH_OK=1
+    #         break
+    #     fi
+    # done
+    #
+    # if [ "$AGH_OK" = "1" ]; then
+    #     echo "[加固] AdGuard Home 已启用: 127.0.0.1:5333（dns_mode=upstream，init 自动转发）"
+    # else
+    #     logger -t custom-stability "AdGuard Home 未监听 5333，自动回滚 dnsmasq"
+    #     uci set adguardhome_lite.main.enabled='0'
+    #     uci commit adguardhome_lite
+    #     /etc/init.d/adguardhome_lite stop 2>/dev/null || true
+    #     /etc/init.d/adguardhome_lite disable 2>/dev/null || true
+    #     uci -q delete dhcp.@dnsmasq[0].server
+    #     uci -q set dhcp.@dnsmasq[0].noresolv='0'
+    #     uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
+    #     uci -q set dhcp.@dnsmasq[0].domainneeded='1'
+    #     uci -q commit dhcp
+    #     /etc/init.d/dnsmasq restart 2>/dev/null || true
+    #     echo "[加固][WARN] AdGuard Home 启动失败，已回滚到默认 DNS"
+    # fi
+    echo "[加固] AdGuard Home 已配置（默认禁用），LuCI → 服务 → AdGuard Home Lite 手动启用"
 else
-    echo "[加固][WARN] 未检测到 SmartDNS，跳过 DNS 加速（dnsmasq 保持默认）"
+    echo "[加固][WARN] 未检测到 AdGuard Home，跳过 DNS 加速（dnsmasq 保持默认）"
 fi
 
-# 7e. dnsmasq 基础优化（与 SmartDNS 成败无关，始终安全）
+# 7e. dnsmasq 基础优化（与 AdGuard Home 成败无关，始终安全）
 if uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
     uci -q set dhcp.@dnsmasq[0].cachesize='2000'
     for d in msftncsi.com ipv6.msftncsi.com ntp.org.cn; do
@@ -172,11 +179,9 @@ if uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
 fi
 
 # --- 8. 内核调优 sysctl ---
-# 同样由 /etc/init.d/custom-tune 每次开机执行（见文件末尾启用）
+# 由 /etc/init.d/custom-tune 每次开机执行
 
 # --- 9. 默认 LuCI 主题 Aurora ---
-# 主题包自带的 30_luci-theme-aurora 在 sysupgrade 保留配置时（PKG_UPGRADE=1）不执行，
-# 这里无条件补一次，确保升级后界面仍是 Aurora
 if [ -d /www/luci-static/aurora ]; then
     printf '%s\n' \
         "set luci.themes.Aurora='/luci-static/aurora'" \
@@ -186,8 +191,6 @@ if [ -d /www/luci-static/aurora ]; then
 fi
 
 # --- 10. zram 交换分区固定 256MB + LZ4 ---
-# uci-defaults 早于 /etc/init.d/zram（START=15）执行，此处设置可生效
-# 内核未编入 LZ4 时 zram.init 会自动回退 lzo，不会启动失败
 uci -q set system.@system[0].zram_size_mb='256'
 uci -q set system.@system[0].zram_comp_algo='lz4'
 uci -q commit system
@@ -196,7 +199,7 @@ echo "[加固] zram 已设为 256MB / LZ4"
 # --- 11. 启用开机运行时调优服务 ---
 if [ -x /etc/init.d/custom-tune ]; then
     /etc/init.d/custom-tune enable
-    echo "[加固] custom-tune 已启用（每次开机 irqbalance + sysctl + SmartDNS 守护）"
+    echo "[加固] custom-tune 已启用（每次开机 irqbalance + sysctl + AdGuard Home 守护）"
 fi
 
 echo "=== 360V6 出厂加固完成 ==="
