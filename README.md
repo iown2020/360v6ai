@@ -41,7 +41,7 @@
 | **运维插件** | luci-app-wol（网络唤醒）、luci-app-autoreboot（定时重启）、luci-app-upnp、autocore（硬件状态） |
 | **CPU 调频** | cpufreq 服务 + luci-app-cpufreq：performance 策略，864MHz~1.2GHz（默认值写入 `/etc/config/cpufreq`，界面可调） |
 | **交换分区** | zram-swap（256MB / LZ4） |
-| **DNS 加速** | **SmartDNS**（127.0.0.1:6053，测速选最快 + DoH/DoT + 域名分流 + ECS + 污染防护）+ luci-app-smartdns |
+| **DNS 加速** | **AdGuard Home + luci-app-adguardhome-lite**（Ozero-top 版，内置 dns_mode 自动处理 dnsmasq；默认禁用，LuCI 里手动启用；启用后 init 自动 apply 端口/patch/YAML + 自动设 dnsmasq 转发）+ 4 个预设上游（阿里 UDP + 腾讯 UDP + 阿里 DoH + Cloudflare DoH）+ 免费广告过滤（blocking.enabled=true）|
 | **内核调优** | BBR + fq 拥塞控制、16MB TCP 缓冲、65536 conntrack、PMTU 探测等（`/etc/sysctl.d/99-kernel-tune.conf`，每次开机由 `custom-tune` 服务加载） |
 
 ---
@@ -79,28 +79,37 @@
 - 原厂默认 **5 秒 3 次** 激进 LCP keepalive，链路轻微抖动即触发重拨；**完全关闭**又会让链路假死只能靠重启恢复
 - 改为**温和保活**：每 10 秒探测一次，连续 5 次无响应才重拨（`keepalive='10 5'`）
 
-### 6. DNS 加速链路（完整烧录，开机直用）
+### 6. DNS 加速链路（方案 B：配置预置、默认禁用、LuCI 手动启用）
 
-出厂自动建立四组件协作的 DNS 加速链路，**即使 OpenClash 未启用也能独立工作**：
+出厂只写配置，**不启动插件**，避免首次开机和 dnsmasq 抢端口冲突。LuCI 里点启用后由插件 init 自动 apply 完整链路：
 
 ```
-客户端 DNS (无论设什么目标 IP)
-  └─→ fw4 DNS 强制重定向 (LAN UDP/TCP 53 → 本地 :53，防客户端绕过污染防护)
-        └─→ dnsmasq (noresolv=1 绕过运营商 DNS + cachesize=2000 + rebind 保护)
-              └─→ SmartDNS (127.0.0.1:6053)
-                    ├─→ 阿里/腾讯 DoH+DoT (.cn 域名测速选最快)
-                    └─→ Cloudflare/Google DoH+DoT (非 .cn 域名测速选最快)
+启用前（首次开机，dnsmasq 保持默认）：
+客户端 DNS → dnsmasq(53) → 运营商默认上游 → ✅ 不碰、零冲突
+
+启用后（LuCI 点启用，init 自动 apply）：
+客户端 DNS
+  └─→ dnsmasq (noresolv=1 + cachesize=2000 + rebind 保护)
+        └─→ AdGuard Home (127.0.0.1:5333)
+              ├─→ 国内 UDP 223.5.5.5 / 119.29.29.29 (测速选最快)
+              └─→ 国外 DoH dns.alidns.com / 1.1.1.1 (测速选最快)
 ```
 
-SmartDNS 出厂配置要点：
-- fake-ip **明确关闭**（OpenClash 做 fake-ip + 分流，两套 pool 同时开会冲突）
-- `cache-size 8192`、`cache-persist true`（重启不丢）、`log-level warn`
-- `edns-client-subnet 0.0.0.0/0`（返回所在地区最优 CDN，不泄露具体子网）
-- `speed-check-mode ping,tcp:443`（改自 tcp:80，测速路径与 DoH/DoT 实际业务路径一致）
-- 域名分流：`.cn` 强制 domestic 组（阿里/腾讯）、非 `.cn` 强制 foreign 组（Cloudflare/Google），`-x` 组内测速不再全组混选
-- `bogus-nxdomain yes` + `reuse-port yes`（污染防护 + DoH 端口复用）
+为什么用 luci-app-adguardhome-lite（Ozero-top 版）而不是其他方案：
+- **dns_mode 自动处理 dnsmasq**：`dns_mode='upstream'` 模式下，init 启动时自动 `patch_agh_port`（把 YAML port 从模板的 53 patch 成 5333）+ 自动设 dnsmasq 的 noresolv/server，停止时 `reverse` 自动恢复原值，**不留残留**
+- **procd 完整状态机**：进程挂了 procd 自动拉起，幂等 apply/reverse，不需要额外守护脚本
+- **内置 OpenClash/PassWall 适配**：如果后续启用科学上网，dns_mode 可一键切 openclash/passwall/clashfirst，自动处理 DNS 串联
 
-fw4 DNS 强制重定向：自动写入 nftables chain `smartdns_dns_redirect` 并安装独立 init.d 服务（`START=90`），只对 LAN 生效，WAN 不受影响。
+出厂写入的默认配置（LuCI 启用后生效）：
+- UCI（`/etc/config/adguardhome_lite`，section `adguardhome_lite.main`）：`enabled=0`、`dns_mode='upstream'`、`webport=13800`、`workdir=/etc/AdGuardHome`（持久化）、`cache_enabled=1`、`cache_size_mb=32`、`github_proxy='gh-proxy.org'`
+- YAML（`/etc/AdGuardHome.yaml`，port 字段**故意不写**，让插件 init 的 `patch_agh_port` 自动 patch 成 5333）：4 个 `upstream_dns`、`bootstrap_dns` 同 2 个国内 UDP、`blocking.enabled=true`（免费广告过滤）
+- dnsmasq 基础优化：`cachesize=2000` + `rebind_domain` 白名单（msftncsi.com 等），**首次开机就写**（和 AdGuard Home 成败无关，始终安全）
+
+LuCI 启用后做什么（全部自动）：
+1. init `start()` → `dns_mode.sh apply`：patch YAML port=5333 → 清 dnsmasq 其他 server → 设 `noresolv=1` → 加 `server=127.0.0.1#5333` → 重启 dnsmasq
+2. 停止/禁用时 `dns_mode.sh reverse`：把 dnsmasq 恢复到 apply 之前的状态（由 `save_original` 先保存）
+
+首次 Web UI 登录：`http://192.168.50.1:13800`，用户名密码 UCI 里是 `admin/admin123`（**登录后立即改密码**，UCI 里是明文）。
 
 ### 7. 运行时调优服务（custom-tune，每次开机）
 
@@ -108,7 +117,6 @@ fw4 DNS 强制重定向：自动写入 nftables chain `smartdns_dns_redirect` �
 
 1. **irqbalance 启动**：多核均衡网络中断负载
 2. **内核调优 sysctl**：先 `modprobe nf_conntrack` 确保模块就绪，再 `sysctl -p /etc/sysctl.d/*.conf`（含 BBR/fq、TCP 缓冲、conntrack 等），错误通过 `logger` 写入系统日志便于刷机后定位
-3. **OpenClash nameserver 自动对接 SmartDNS**：检测 OpenClash yaml 里是否已含 `127.0.0.1:6053`，若无则 awk 替换 nameserver 段并重启 OpenClash。覆盖首次刷机 OpenClash 规则还没拉的场景——用户在 LuCI 拉完规则、重启路由器后自动对接，无需手动配置
 
 ---
 
@@ -136,7 +144,7 @@ fw4 DNS 强制重定向：自动写入 nftables chain `smartdns_dns_redirect` �
 
 - 编译预计耗时：**1~2 小时**（首次编译；后续有三层缓存加速：ccache 编译缓存 + staging_dir 工具链 + `dl/` 源码包缓存，dl 按源码分支复用，不再每次重下）
 - 编译成功后自动创建 **Release**（标签 `R<构建序号>`），在仓库 **Releases** 页下载固件、`sha256sums`、`config.buildinfo`
-- 编译前有**预检**：设备目标、512M profile、Aurora、仪表盘、cpufreq、zram-swap/kmod-zram/LZ4 后端、SmartDNS 主包 + luci-app-smartdns，任一缺失立即 FAIL，不会白跑几小时；BBR/fq 等为 WARN 级只告警不阻断
+- 编译前有**预检**：设备目标、512M profile、Aurora、仪表盘、cpufreq、zram-swap/kmod-zram/LZ4 后端、AdGuard Home 主包 + luci-app-adguardhome-lite，任一缺失立即 FAIL，不会白跑几小时；BBR/fq 等为 WARN 级只告警不阻断
 - 编译失败会在该次运行页面底部 **Artifacts** 中提供 `build-failed-log`
 
 ---
@@ -198,42 +206,56 @@ cat /sys/block/zram0/comp_algorithm   # 期望 [lz4]
 
 ### 验证 DNS 加速链路
 
+方案 B：首次开机 **AdGuard Home 默认禁用**，LuCI → 服务 → AdGuard Home Lite → 勾启用 → 保存并应用后跑：
+
 ```sh
-# SmartDNS 进程 + 端口
-ps | grep smartdns
-ss -ulnp | grep 6053                  # 期望看到 smartdns
+# 1. UCI 已就位（首次开机就有，只是 enabled=0）
+uci get adguardhome_lite.main.enabled       # 启用前: 0 / 启用后: 1
+uci get adguardhome_lite.main.dns_mode      # upstream（固定）
+uci get adguardhome_lite.main.webport       # 13800（Web UI）
+uci get adguardhome_lite.main.cache_size_mb # 32
 
-# dnsmasq 已绕过运营商 DNS 并指向 SmartDNS
-uci get dhcp.@dnsmasq[0].noresolv     # 期望 1
-uci get dhcp.@dnsmasq[0].server        # 期望 127.0.0.1#6053
+# 2. YAML 已就位（port 不写，init 会 patch 成 5333）
+grep 'port:' /etc/AdGuardHome.yaml
+# 启用前: 没输出（或只有注释）
+# 启用后: port: 5333（init patch 的）
+grep 'upstream_dns:' -A 5 /etc/AdGuardHome.yaml | head -10
+# 期望看到 223.5.5.5 / 119.29.29.29 / dns.alidns.com / 1.1.1.1
 
-# SmartDNS conf 已写入
-cat /etc/smartdns/smartdns.conf | grep -E 'cache-size|edns-client|speed-check|server /\*'
+# 3. 5333 监听 + dnsmasq 自动转发
+netstat -uln | grep 5333                   # 启用前: 没输出 / 启用后: udp :::5333
+uci get dhcp.@dnsmasq[0].noresolv          # 启用前: 没设或 0 / 启用后: 1
+uci get dhcp.@dnsmasq[0].server            # 启用前: 没设 / 启用后: 127.0.0.1#5333
 
-# fw4 DNS 强制重定向规则
-nft list chain inet fw4 smartdns_dns_redirect
-ls -la /etc/init.d/smartdns-dns-redirect
+# 4. dnsmasq 基础优化（首次开机就写，和启用状态无关）
+uci get dhcp.@dnsmasq[0].cachesize         # 2000
+uci get dhcp.@dnsmasq[0].rebind_domain    # 包含 msftncsi.com 等
 
-# OpenClash DNS 已对接 SmartDNS（如果启用了 OpenClash）
-grep -A 3 'nameserver' /etc/openclash/config/*.yaml 2>/dev/null
-# 期望看到 127.0.0.1:6053
+# 5. 实际解析
+nslookup www.baidu.com                     # 快速返回真实 IP
+nslookup github.com                        # 真实 IP，不是污染假 IP
 
-# sysctl 内核调优
-sysctl net.ipv4.tcp_congestion_control    # 期望 bbr
-sysctl net.core.default_qdisc              # 期望 fq
-sysctl net.netfilter.nf_conntrack_max     # 期望 65536
-
-# 实际 DNS 解析验证
-# LAN 客户端: nslookup www.baidu.com 192.168.50.1
-# 应快速返回真实 IP，不是 fake-ip
-# 污染防护测试: nslookup www.qq.com 192.168.50.1 应返回真实 IP
+# 6. 内核调优
+sysctl net.ipv4.tcp_congestion_control     # 期望 bbr
+sysctl net.core.default_qdisc             # 期望 fq
+sysctl net.netfilter.nf_conntrack_max      # 期望 65536
 ```
 
 ### 验证 custom-tune 运行时调优
 
 ```sh
 logread -t custom-tune
-# 期望看到: irqbalance 已启动 / 内核调优已加载 / OpenClash nameserver 自动对接（如果启用了 OpenClash）
+# 期望看到: irqbalance 已启动 / 内核调优已加载
+```
+
+### 停止/禁用 AdGuard Home
+
+LuCI 里取消勾选启用 → 保存并应用，init 的 `dns_mode.sh reverse` 自动恢复 dnsmasq：
+
+```sh
+# reverse 自动完成，不需要手动操作
+uci get dhcp.@dnsmasq[0].noresolv          # 应回到 0 或没设
+uci get dhcp.@dnsmasq[0].server            # 应清除 127.0.0.1#5333
 ```
 
 ---
@@ -248,9 +270,9 @@ logread -t custom-tune
 │   └── General.config                    # 预装/禁用软件包列表
 ├── scripts/Roc-script.sh                 # 编译前：改 IP、Aurora、OpenClash、EasyTier feed、files 复制
 ├── files/
-│   ├── etc/uci-defaults/99-custom-stability  # 首次开机：cpufreq/Wi-Fi/射频/防火墙/ECM/DNS 加速链路(dnsmasq+SmartDNS+fw4重定向)/OpenClash nameserver 自动对接/主题/zram
+│   ├── etc/uci-defaults/99-custom-stability  # 首次开机：cpufreq/Wi-Fi/射频/防火墙/ECM/DNS 配置预置(AdGuard Home UCI+YAML+默认禁用)/主题/zram
 │   ├── etc/config/cpufreq                    # cpufreq 默认值：performance / 864-1200MHz
-│   ├── etc/init.d/custom-tune                # 每次开机：irqbalance + sysctl(99-kernel-tune.conf) + OpenClash nameserver 重试
+│   ├── etc/init.d/custom-tune                # 每次开机：irqbalance + sysctl(99-kernel-tune.conf)
 │   └── etc/sysctl.d/99-kernel-tune.conf      # 内核内存保护 + BBR/fq + TCP 缓冲 + conntrack + PMTU 探测
 └── README.md
 ```
@@ -265,3 +287,4 @@ logread -t custom-tune
 - [OpenClash 官方仓库](https://github.com/vernesong/OpenClash)
 - [EasyTier 官方仓库](https://github.com/EasyTier/EasyTier)
 - [Aurora 主题](https://github.com/eamonxg/luci-theme-aurora)
+- [luci-app-adguardhome-lite（Ozero-top 版）](https://github.com/Ozero-top/luci-app-adguardhome-lite) — 本工程使用的 AdGuard Home LuCI 界面，内置 5 种 dns_mode 自动处理 dnsmasq
