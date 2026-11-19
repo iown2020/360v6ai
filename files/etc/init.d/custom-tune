@@ -2,10 +2,12 @@
 # ============================================================
 # 360V6 每次开机执行的运行时调优
 # CPU 调频交给 cpufreq 服务（/etc/config/cpufreq：performance / 864MHz-1.2GHz），
-# 这里处理 irqbalance、sysctl、SmartDNS 守护
-# （uci-defaults 只运行一次，运行时状态必须每次开机重新应用）
+# 这里只处理 irqbalance、sysctl、SmartDNS 守护
+# uci-defaults 只在首次开机跑一次，下面三件事是运行时状态，重启即丢，
+# 必须每次开机都重新应用
 # ============================================================
-# START=99: 等 firewall / nf_conntrack / smartdns 都就绪
+# START=99: 等 firewall (START=42) / nf_conntrack 加载完成再应用 net.netfilter.*
+# 避免 sysctl 写入 conntrack_max 时模块未加载被静默吞掉
 START=99
 
 start() {
@@ -22,6 +24,7 @@ start() {
     if [ -d /etc/sysctl.d ]; then
         modprobe nf_conntrack 2>/dev/null || true
         OUT=$(sysctl -p /etc/sysctl.d/*.conf 2>&1) || true
+        # 保留错误输出，便于刷机后定位（比如 BBR/fq 模块缺失）
         if [ -n "$OUT" ]; then
             logger -t custom-tune "sysctl: ${OUT}"
         fi
@@ -29,13 +32,12 @@ start() {
     fi
 
     # --- SmartDNS 守护 ---
-    # SmartDNS 启用了但 6053 没监听时，立即把 dnsmasq 恢复默认，
-    # 保证任何情况下都不会因为 DNS 上游不存在而断网
     SD_ENABLED="$(uci -q get smartdns.@smartdns[0].enabled)"
     SD_PORT="$(uci -q get smartdns.@smartdns[0].port)"
     [ -n "$SD_PORT" ] || SD_PORT="6053"
 
     if [ "$SD_ENABLED" = "1" ]; then
+        # 场景 A：启用中 → 确保真的在监听；失败则回滚 dnsmasq
         DNS_OK=0
         for i in 1 2 3 4 5; do
             sleep 1
@@ -53,7 +55,24 @@ start() {
             uci -q set dhcp.@dnsmasq[0].domainneeded='1'
             uci -q commit dhcp
             /etc/init.d/dnsmasq restart 2>/dev/null || true
+            # 顺便再拉 SmartDNS 一把，或许下一次能起来
             /etc/init.d/smartdns restart 2>/dev/null || true
+        fi
+    else
+        # 场景 B：LuCI 里被关掉了 → 把 dnsmasq 从 6053 收回来，避免断网
+        # 检查 dnsmasq 是否还残留指向 127.0.0.1#6053 的 server
+        HAS_SD_UPSTREAM=0
+        if uci -q get dhcp.@dnsmasq[0].server 2>/dev/null | grep -q '127\.0\.0\.1#6053'; then
+            HAS_SD_UPSTREAM=1
+        fi
+        if [ "$HAS_SD_UPSTREAM" = "1" ] || [ "$(uci -q get dhcp.@dnsmasq[0].noresolv)" = "1" ]; then
+            logger -t custom-tune "SmartDNS 已禁用，回收 dnsmasq 到默认上游"
+            uci -q delete dhcp.@dnsmasq[0].server
+            uci -q set dhcp.@dnsmasq[0].noresolv='0'
+            uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
+            uci -q set dhcp.@dnsmasq[0].domainneeded='1'
+            uci -q commit dhcp
+            /etc/init.d/dnsmasq restart 2>/dev/null || true
         fi
     fi
 }
