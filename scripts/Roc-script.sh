@@ -77,16 +77,6 @@ rm -rf package/luci-app-shortcut-fe 2>/dev/null || true
 # wpad 切 mbedtls 版（体积更小，WPA2/WPA3 个人版均支持）
 sed -i "s/wpad-openssl/wpad-mbedtls/g" target/linux/qualcommax/Makefile 2>/dev/null || true
 
-# --- 3.6 移除 rust / rustup 源码（必须在 feeds install 之前删一次）---
-# 原因：rust 1.96 的 bootstrap 默认 download-ci-llvm=true，会去
-# ci-artifacts.rust-lang.org 拉预编译 LLVM；对应 artifact 已被官方清理 → 404
-# → host 编译失败 → make world 退出 2。本固件不需要任何 Rust 包（EasyTier 走官方
-# 预编译二进制，不依赖 rust 工具链），直接排除源码最干净。
-rm -rf feeds/packages/lang/rust feeds/packages/lang/rustup 2>/dev/null || true
-rm -rf package/feeds/packages/rust package/feeds/packages/rustup 2>/dev/null || true
-rm -rf package/rust package/rustup 2>/dev/null || true
-echo "rust / rustup 源码已排除"
-
 # --- 4. 添加 EasyTier 2.4.5 feed 源 ---
 # 锁定官方 v2.4.5 tag，确保版本稳定
 grep -q "luci-app-easytier" feeds.conf.default 2>/dev/null || \
@@ -133,18 +123,30 @@ fi
 # --- 8. 更新并安装 feeds ---
 echo "=== 更新 feeds ==="
 ./scripts/feeds update -a
+
+# --- 8.05 移除 rust 包本体，但保留 rust-values.mk（必须在 feeds install 之前）---
+# 1) python3-host.mk 里是无条件 include ../rust/rust-values.mk，
+#    该文件只定义变量（RUSTC_TARGET_ARCH / CARGO_HOME 等），本身不触发任何编译，
+#    所以删掉它 → python3 host 直接编译失败（这就是上一个报错）。
+# 2) 但 rust 包本体会触发 host 编译，而 immortalwrt 该分支写的是
+#    --set=llvm.download-ci-llvm=true，会去下拉已被官方清理的
+#    rust-dev-1.96.0-x86_64-unknown-linux-gnu.tar.xz → 404 → 编译中断。
+# 结论：只保留 rust-values.mk，删掉 Makefile/其余内容。
+if [ -f feeds/packages/lang/rust/rust-values.mk ]; then
+    cp feeds/packages/lang/rust/rust-values.mk /tmp/rust-values.mk
+    rm -rf feeds/packages/lang/rust
+    mkdir -p feeds/packages/lang/rust
+    cp /tmp/rust-values.mk feeds/packages/lang/rust/rust-values.mk
+    echo "rust: 已移除包本体，仅保留 rust-values.mk（python3 host 依赖它）"
+else
+    echo "[WARN] 未找到 feeds/packages/lang/rust/rust-values.mk"
+fi
+
 ./scripts/feeds install -a
 
 # feeds 里也有 luci-app-openclash，install 会建 symlink；
 # 与 package/luci-app-openclash 同名会造成 scan 阶段重复包名，删掉 feed 版
 rm -rf package/feeds/luci/luci-app-openclash 2>/dev/null || true
-
-# --- 8.1 install 之后再清一次 rust / rustup ---
-# feeds install -a 会重新把 rust 包 symlink 到 package/feeds/packages/，
-# 不在这里清掉，defconfig/scan 阶段仍会把它带进构建集，host 编译照旧 404
-rm -rf package/feeds/packages/rust package/feeds/packages/rustup 2>/dev/null || true
-rm -rf feeds/packages/lang/rust feeds/packages/lang/rustup 2>/dev/null || true
-echo "rust / rustup symlink 已清理"
 
 # --- 8.5 zram-swap 容量 ---
 # 新版 zram-swap（zram.init）默认就是物理内存的一半，无需 patch 源码；
