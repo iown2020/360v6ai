@@ -170,12 +170,12 @@ jobs:
             || echo "[WARN] kmod-sched-core 未生效，刷机后 fq 队列将回退默认 mq"
           grep -q '^CONFIG_PACKAGE_luci-app-adguardhome-lite=y' .config \
             || { echo "[FAIL] luci-app-adguardhome-lite 未启用"; FAIL=1; }
-          # rust host 编译会去下载已被官方清理的 CI LLVM 产物（404），
-          # DIY 脚本已删除其源码与 symlink，这里确认构建树里确实没有残留
-          if [ -d package/feeds/packages/rust ] || [ -d package/feeds/packages/rustup ] \
-             || [ -d feeds/packages/lang/rust ]; then
-            echo "[FAIL] rust/rustup 仍在构建树中，会导致 llvm artifact 404"; FAIL=1
-          fi
+          # rust 包本体会触发 host 编译并下载已被清理的 CI LLVM（404），DIY 脚本已删；
+          # 但 python3-host.mk 无条件 include ../rust/rust-values.mk，该文件必须保留
+          [ ! -f feeds/packages/lang/rust/Makefile ] \
+            || { echo "[FAIL] rust 包本体仍在，会触发 CI LLVM 404"; FAIL=1; }
+          [ -f feeds/packages/lang/rust/rust-values.mk ] \
+            || { echo "[FAIL] rust-values.mk 缺失，python3 host 会编译失败"; FAIL=1; }
           [ $FAIL -eq 1 ] && { echo "=== 预检失败，终止（避免无效编译） ==="; exit 1; }
           echo "=== 预检通过 ==="
 
