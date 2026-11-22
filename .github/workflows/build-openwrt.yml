@@ -133,8 +133,6 @@ jobs:
             || { echo "[FAIL] 目标平台不是 qualcommax"; FAIL=1; }
           grep -qE 'CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_.*360v6=y' .config \
             || { echo "[FAIL] 目标设备未选中 360v6"; FAIL=1; }
-          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config \
-            || { echo "[FAIL] OpenClash 未启用"; FAIL=1; }
           grep -q '^CONFIG_PACKAGE_luci-app-easytier=y' .config \
             || { echo "[FAIL] luci-app-easytier 未启用（EasyTier feed 注册失败？）"; FAIL=1; }
           grep -q '^CONFIG_PACKAGE_easytier=y' .config \
@@ -168,8 +166,16 @@ jobs:
             || echo "[WARN] kmod-tcp-bbr 未生效，刷机后 BBR 将回退默认 cubic"
           grep -q '^CONFIG_PACKAGE_kmod-sched-core=y' .config \
             || echo "[WARN] kmod-sched-core 未生效，刷机后 fq 队列将回退默认 mq"
+          grep -q '^CONFIG_PACKAGE_kmod-tun=y' .config \
+            || echo "[WARN] kmod-tun 未生效，EasyTier 将无法创建 TUN 网卡"
           grep -q '^CONFIG_PACKAGE_luci-app-adguardhome-lite=y' .config \
             || { echo "[FAIL] luci-app-adguardhome-lite 未启用"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_kmod-fs-ksmbd=y' .config \
+            || { echo "[FAIL] kmod-fs-ksmbd 未启用（共享会不可用）"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_ksmbd-server=y' .config \
+            || { echo "[FAIL] ksmbd-server 未启用（共享会不可用）"; FAIL=1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-ksmbd=y' .config \
+            || echo "[WARN] luci-app-ksmbd 未生效（feed 缺该界面包？共享仍可用命令行配置）"
           # rust 包本体会触发 host 编译并下载已被清理的 CI LLVM（404），DIY 脚本已删；
           # 但 python3-host.mk 无条件 include ../rust/rust-values.mk，该文件必须保留
           [ ! -f feeds/packages/lang/rust/Makefile ] \
@@ -244,9 +250,8 @@ jobs:
             - **管理**：LuCI 简体中文 + Aurora 主题
             - **加速**：NSS 全套驱动 + ECM（fw4 软件/硬件分流已关闭，由 NSS 独占）
             - **DNS**：luci-app-adguardhome-lite（仅安装 LuCI 界面，出厂未启用、无内核、未做任何 DNS 配置，保持系统默认 DNS）
-            - **代理**：OpenClash
             - **组网**：EasyTier 2.4.5
-            - **共享**：Samba4 + USB 存储（ext4 / vfat / msdos，自动挂载）
+            - **共享**：ksmbd（内核态 SMB2/3）+ USB 存储（ext4 / vfat / msdos，自动挂载）
             - **运维**：网络唤醒 wol、定时重启 autoreboot、UPnP、autocore 硬件状态
             - **工具**：bash、htop、nano、ttyd 终端、SFTP
 
