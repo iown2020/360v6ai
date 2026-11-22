@@ -33,9 +33,8 @@
 |------|--------|
 | **管理界面** | LuCI 全套 + Aurora 主题（简体中文） |
 | **NSS 加速** | 全套 qca-nss 驱动 + ECM 连接管理器 + NSS DP |
-| **科学上网** | **OpenClash**（含 TUN/TProxy 依赖） |
 | **内网组网** | **EasyTier 2.4.5**（由官方 v2.4.5 tag 构建） |
-| **局域网共享** | **Samba4** |
+| **局域网共享** | **ksmbd**（内核态 SMB2/SMB3，支持多用户与 guest） |
 | **存储支持** | USB 存储驱动（ext4/vfat/msdos）+ U 盘自动挂载 |
 | **系统工具** | bash、htop、nano、openssh-sftp-server、ttyd 终端 |
 | **运维插件** | luci-app-wol（网络唤醒）、luci-app-autoreboot（定时重启）、luci-app-upnp、autocore（硬件状态） |
@@ -236,7 +235,7 @@ logread -t custom-tune
 ├── configs/
 │   ├── IPQ60XX.config                    # 目标平台 + 512M 内存 Profile + NSS 固件版本
 │   └── General.config                    # 预装/禁用软件包列表
-├── scripts/Roc-script.sh                 # 编译前：改 IP、Aurora、OpenClash、EasyTier feed、files 复制
+├── scripts/Roc-script.sh                 # 编译前：改 IP、Aurora、EasyTier feed、rust 精简、files 复制
 ├── files/
 │   ├── etc/uci-defaults/99-custom-stability  # 首次开机：cpufreq/Wi-Fi/射频/防火墙/ECM/dnsmasq 缓存/主题/zram
 │   ├── etc/config/cpufreq                    # cpufreq 默认值：performance / 864-1200MHz
@@ -252,7 +251,6 @@ logread -t custom-tune
 - [laipeng668/openwrt-6.x NSS 源码](https://github.com/laipeng668/openwrt-6.x/tree/25.12-nss) — 编译基础（Linux 6.12 + NSS v11.4）
 - [ThinkPad88/360V6-NSS-AI](https://github.com/ThinkPad88/360V6-NSS-AI) — 本工程上游原始仓库
 - [zhiffu/360v6-openwrt](https://github.com/zhiffu/360v6-openwrt) — 360V6 设备适配与加固方案参考
-- [OpenClash 官方仓库](https://github.com/vernesong/OpenClash)
 - [EasyTier 官方仓库](https://github.com/EasyTier/EasyTier)
 - [Aurora 主题](https://github.com/eamonxg/luci-theme-aurora)
 - [luci-app-adguardhome-lite（Ozero-top 版）](https://github.com/Ozero-top/luci-app-adguardhome-lite) — 本工程仅安装其 LuCI 界面包（源码在仓库 `src/` 子目录）
