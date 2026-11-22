@@ -2,7 +2,7 @@
 # ============================================================
 # 360V6 (qihoo_360v6) OpenWRT NSS 固件 - 加固精简版 自定义编译脚本
 # 源码: laipeng668/openwrt-6.x 25.12-nss 分支 (Linux 6.12 + 全功能 NSS)
-# 核心: OpenClash + EasyTier 2.4.5 组网 + NSS ECM 硬件加速
+# 核心: EasyTier 2.4.5 组网 + NSS ECM 硬件加速
 # 加固: CPU 1.2GHz 锁频 / WPA2-PSK 纯协议 / 射频功率保护 / 防掉电
 # ============================================================
 
@@ -93,11 +93,6 @@ git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora package/luci-th
 [ -d package/luci-theme-aurora/htdocs/luci-static/aurora ] || { echo "[ERROR] Aurora 主题资源目录缺失"; exit 1; }
 echo "Aurora 主题就绪: package/luci-theme-aurora"
 
-# --- 6. 克隆最新 OpenClash ---
-echo "=== 克隆最新 OpenClash ==="
-rm -rf feeds/luci/applications/luci-app-openclash
-git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
-
 # --- 6.5 克隆 luci-app-adguardhome-lite（仅安装 LuCI 界面，不做任何配置）---
 # 该仓库根目录不是包目录，真正的 OpenWrt 包在 src/luci-app-adguardhome-lite/
 #   （根目录是 install.sh + docs + tools 的工程结构），必须取子目录
@@ -143,10 +138,6 @@ else
 fi
 
 ./scripts/feeds install -a
-
-# feeds 里也有 luci-app-openclash，install 会建 symlink；
-# 与 package/luci-app-openclash 同名会造成 scan 阶段重复包名，删掉 feed 版
-rm -rf package/feeds/luci/luci-app-openclash 2>/dev/null || true
 
 # --- 8.5 zram-swap 容量 ---
 # 新版 zram-swap（zram.init）默认就是物理内存的一半，无需 patch 源码；
